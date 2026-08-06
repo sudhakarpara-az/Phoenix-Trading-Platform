@@ -1,32 +1,44 @@
 """
 Phoenix Trading Platform
-Logger
+
+Logger Module
+
+Provides centralized logging for the application.
 """
 
 from pathlib import Path
 from loguru import logger
 
-project_root = Path(__file__).resolve().parents[2]
+# Project root directory
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-log_folder = project_root / "logs"
+# Log directory
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-log_folder.mkdir(exist_ok=True)
+# Log file
+LOG_FILE = LOG_DIR / "phoenix.log"
 
-log_file = log_folder / "phoenix.log"
-
+# Remove default logger
 logger.remove()
 
+# Console Logger
 logger.add(
-    log_file,
-    rotation="10 MB",
-    retention="30 days",
+    sink=lambda message: print(message, end=""),
     level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+           "<level>{level: <8}</level> | "
+           "{message}",
 )
 
+# File Logger
 logger.add(
-    lambda msg: print(msg, end=""),
-    level="INFO",
+    LOG_FILE,
+    level="DEBUG",
+    rotation="10 MB",
+    retention="30 days",
+    compression="zip",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
 )
 
 __all__ = ["logger"]
