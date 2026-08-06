@@ -1,22 +1,29 @@
 # Virtual Environment
 .venv/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
+venv/
 
 # Environment
 .env
 
-# VSCode
-.vscode/
+# Python
+__pycache__/
+*.py[cod]
 
 # Logs
-logs/*.log
+logs/
+*.log
 
 # Database
 *.db
+*.sqlite3
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
 
 # OS
 .DS_Store
