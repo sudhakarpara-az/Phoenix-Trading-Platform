@@ -1,7 +1,11 @@
 """
 Dhan Broker
 Phoenix Trading Platform
+
+Provides authenticated access to the Dhan SDK.
 """
+
+from __future__ import annotations
 
 import os
 
@@ -13,29 +17,81 @@ load_dotenv()
 
 class DhanBroker:
     """
-    Handles authentication with Dhan API.
+    Dhan Broker wrapper.
+
+    Responsibilities:
+    - Load credentials
+    - Create DhanContext
+    - Create authenticated Dhan client
+    - Expose context and client to other modules
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
 
-        self.client_id = os.getenv("DHAN_CLIENT_ID")
-        self.access_token = os.getenv("DHAN_ACCESS_TOKEN")
+        self._client_id = os.getenv("DHAN_CLIENT_ID")
+        self._access_token = os.getenv("DHAN_ACCESS_TOKEN")
 
-        if not self.client_id:
+        if not self._client_id:
             raise ValueError("DHAN_CLIENT_ID not found in .env")
 
-        if not self.access_token:
+        if not self._access_token:
             raise ValueError("DHAN_ACCESS_TOKEN not found in .env")
 
-        self.context = DhanContext(
-            self.client_id,
-            self.access_token,
+        # Authenticated Dhan context
+        self._context = DhanContext(
+            self._client_id,
+            self._access_token,
         )
 
-        self.client = dhanhq(self.context)
+        # Authenticated SDK client
+        self._client = dhanhq(self._context)
+
+    # ------------------------------------------------------------------
+    # Public Getters
+    # ------------------------------------------------------------------
+
+    def get_context(self) -> DhanContext:
+        """
+        Return authenticated DhanContext.
+        """
+        return self._context
 
     def get_client(self):
-        return self.client
+        """
+        Return authenticated Dhan client.
+        """
+        return self._client
 
-    def is_connected(self):
-        return self.client is not None
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
+    def is_connected(self) -> bool:
+        """
+        Returns True if the client has been initialized.
+        """
+        return self._client is not None
+
+    # ------------------------------------------------------------------
+    # Information
+    # ------------------------------------------------------------------
+
+    @property
+    def client_id(self) -> str:
+        return self._client_id
+
+    @property
+    def access_token(self) -> str:
+        return self._access_token
+
+    # ------------------------------------------------------------------
+    # Representation
+    # ------------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        return (
+            f"DhanBroker("
+            f"client_id='{self._client_id}', "
+            f"connected={self.is_connected()}"
+            f")"
+        )
