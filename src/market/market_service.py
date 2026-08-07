@@ -24,7 +24,7 @@ class MarketService:
         """
         Update latest market tick.
         """
-        self._cache.update(tick)
+        self._cache.update_tick(tick)
 
     def get_tick(self, security_id: str) -> Optional[MarketTick]:
         """
