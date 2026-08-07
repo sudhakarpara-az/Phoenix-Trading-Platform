@@ -435,6 +435,11 @@ def test_live_mode_is_blocked_by_default() -> None:
 
     assert result.accepted is False
 
+    assert (
+        result.eligibility.reason
+        is OrderEligibilityReason.LIVE_EXECUTION_DISABLED
+    )
+
     assert result.execution_result is None
 
     assert broker.submit_count == 0
@@ -447,7 +452,6 @@ def test_live_mode_is_blocked_by_default() -> None:
         )
         is OrderLifecycleState.CANCELLED
     )
-
 
 def test_live_enabled_routes_to_provider() -> None:
     broker = FakeBrokerProvider(
@@ -549,12 +553,13 @@ def test_broker_rejection_maps_to_rejected_state() -> None:
         is OrderLifecycleState.REJECTED
     )
 
+def test_same_signal_cannot_execute_twice() -> None:
+    service, broker, _ = make_service()
 
-def test_intent_ids_are_unique() -> None:
-    service, _, _ = make_service()
+    signal = make_signal()
 
     first = service.execute(
-        signal=make_signal(),
+        signal=signal,
         selected_option=make_selected_option(),
         quantity=65,
         execution_mode=ExecutionMode.DRY_RUN,
@@ -563,7 +568,7 @@ def test_intent_ids_are_unique() -> None:
     )
 
     second = service.execute(
-        signal=make_signal(),
+        signal=signal,
         selected_option=make_selected_option(),
         quantity=65,
         execution_mode=ExecutionMode.DRY_RUN,
@@ -571,10 +576,15 @@ def test_intent_ids_are_unique() -> None:
         context=OrderEligibilityContext(),
     )
 
+    assert first.accepted is True
     assert first.intent is not None
-    assert second.intent is not None
+
+    assert second.accepted is False
+    assert second.intent is None
 
     assert (
-        first.intent.intent_id.value
-        != second.intent.intent_id.value
+        second.eligibility.reason
+        is OrderEligibilityReason.DUPLICATE_ORDER
     )
+
+    assert broker.submit_count == 0

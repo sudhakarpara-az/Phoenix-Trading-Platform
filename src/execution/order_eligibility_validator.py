@@ -44,6 +44,9 @@ class OrderEligibilityReason(str, Enum):
 
     INVALID_EXECUTION_MODE = "INVALID_EXECUTION_MODE"
 
+    DUPLICATE_ORDER = "DUPLICATE_ORDER"
+    LIVE_EXECUTION_DISABLED = "LIVE_EXECUTION_DISABLED"
+
 
 @dataclass(frozen=True, slots=True)
 class OrderEligibilityContext:
