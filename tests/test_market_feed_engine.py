@@ -114,7 +114,7 @@ def test_health_includes_subscription_count() -> None:
 
     subscriptions.add(
         Instrument(
-            exchange=Exchange.NSE,
+            exchange=Exchange.IDX,
             symbol="NIFTY 50",
             security_id="13",
         )

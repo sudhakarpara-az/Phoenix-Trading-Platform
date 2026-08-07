@@ -27,5 +27,8 @@ where = ["."]
 include = ["src*"]
 
 [tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring external systems or live broker connectivity",
+]
 pythonpath = ["."]
 testpaths = ["tests"]

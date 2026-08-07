@@ -208,7 +208,9 @@ class DhanWebSocketAdapter:
             raise
 
     def disconnect(self) -> None:
-        """Close the active Dhan market-feed connection."""
+        """
+        Close the active Dhan market-feed connection safely.
+        """
 
         if self._feed is None:
             self._feed_engine.set_disconnected()
@@ -216,7 +218,14 @@ class DhanWebSocketAdapter:
             return
 
         try:
-            self._feed.disconnect()
+            close_connection = getattr(
+                self._feed,
+                "close_connection",
+                None,
+            )
+
+            if callable(close_connection):
+                close_connection()
 
         finally:
             self._feed = None
@@ -261,6 +270,7 @@ class DhanWebSocketAdapter:
     @staticmethod
     def _map_exchange(exchange: Exchange) -> int:
         mapping = {
+            Exchange.IDX: MarketFeed.IDX,
             Exchange.NSE: MarketFeed.NSE,
             Exchange.NFO: MarketFeed.NSE_FNO,
             Exchange.BSE: MarketFeed.BSE,

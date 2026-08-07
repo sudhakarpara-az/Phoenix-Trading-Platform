@@ -87,7 +87,7 @@ def test_market_tick_rejects_negative_volume() -> None:
 
 def test_market_tick_is_immutable() -> None:
     tick = MarketTick(
-        exchange=Exchange.NSE,
+        exchange=Exchange.IDX,
         symbol="NIFTY 50",
         security_id="13",
         ltp=24850.00,

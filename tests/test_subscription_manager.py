@@ -121,7 +121,7 @@ def test_list_all_returns_all_subscriptions() -> None:
     manager.add(
         make_instrument(
             security_id="111111",
-            exchange=Exchange.NSE,
+            exchange=Exchange.IDX,
             symbol="NIFTY 50",
         )
     )

@@ -17,7 +17,7 @@ def build_processor():
     subscriptions = SubscriptionManager()
 
     instrument = Instrument(
-        exchange=Exchange.NSE,
+        exchange=Exchange.IDX,
         symbol="NIFTY 50",
         security_id="13",
     )

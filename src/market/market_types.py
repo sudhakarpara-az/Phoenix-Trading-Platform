@@ -15,6 +15,7 @@ from enum import Enum
 class Exchange(str, Enum):
     """Supported exchange segments."""
 
+    IDX = "IDX"
     NSE = "NSE"
     BSE = "BSE"
     NFO = "NFO"

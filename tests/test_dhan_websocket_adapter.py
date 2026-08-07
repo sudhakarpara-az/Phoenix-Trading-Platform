@@ -1,3 +1,6 @@
+from dhanhq import MarketFeed
+import pytest
+
 from src.market.dhan_websocket_adapter import DhanWebSocketAdapter
 from src.market.feed_health_monitor import (
     FeedHealthMonitor,
@@ -17,6 +20,12 @@ from src.market.subscription_manager import SubscriptionManager
 
 
 class FakeDhanFeed:
+    """
+    Fake Dhan MarketFeed used for unit testing.
+
+    No real broker connection is created.
+    """
+
     def __init__(
         self,
         dhan_context,
@@ -28,7 +37,7 @@ class FakeDhanFeed:
         self.version = version
 
         self.run_called = False
-        self.disconnect_called = False
+        self.close_called = False
 
         self.subscribed = None
         self.unsubscribed = None
@@ -51,11 +60,19 @@ class FakeDhanFeed:
     def unsubscribe_symbols(self, instruments) -> None:
         self.unsubscribed = instruments
 
-    def disconnect(self) -> None:
-        self.disconnect_called = True
+    def close_connection(self) -> None:
+        """
+        Matches the synchronous close method used by
+        DhanWebSocketAdapter.disconnect().
+        """
+        self.close_called = True
 
 
 def build_adapter():
+    """
+    Build a complete fake Phoenix market-feed stack.
+    """
+
     subscriptions = SubscriptionManager()
 
     feed_engine = MarketFeedEngine(
@@ -87,14 +104,36 @@ def build_adapter():
 def add_nifty_subscription(
     subscriptions: SubscriptionManager,
 ) -> None:
+    """
+    Register NIFTY index subscription.
+
+    NIFTY underlying uses Dhan IDX segment.
+    """
+
     subscriptions.add(
         Instrument(
-            exchange=Exchange.NSE,
+            exchange=Exchange.IDX,
             symbol="NIFTY 50",
             security_id="13",
         ),
         TickType.LTP,
     )
+
+
+def test_nifty_index_maps_to_dhan_index_segment() -> None:
+    subscriptions, _, _, _, adapter = build_adapter()
+
+    add_nifty_subscription(subscriptions)
+
+    instruments = adapter.build_dhan_instruments()
+
+    assert instruments == [
+        (
+            MarketFeed.IDX,
+            "13",
+            MarketFeed.Ticker,
+        )
+    ]
 
 
 def test_dhan_instrument_conversion() -> None:
@@ -108,20 +147,19 @@ def test_dhan_instrument_conversion() -> None:
 
     exchange, security_id, tick_type = instruments[0]
 
+    assert exchange == MarketFeed.IDX
     assert security_id == "13"
-    assert exchange is not None
-    assert tick_type is not None
+    assert tick_type == MarketFeed.Ticker
 
 
 def test_create_feed_requires_subscription() -> None:
     _, _, _, _, adapter = build_adapter()
 
-    try:
+    with pytest.raises(
+        RuntimeError,
+        match="without subscriptions",
+    ):
         adapter.create_feed()
-        assert False, "Expected RuntimeError"
-
-    except RuntimeError as exc:
-        assert "without subscriptions" in str(exc)
 
 
 def test_create_feed_creates_dhan_feed() -> None:
@@ -132,6 +170,7 @@ def test_create_feed_creates_dhan_feed() -> None:
     adapter.create_feed()
 
     assert adapter.feed is not None
+    assert adapter.feed.version == "v2"
     assert feed_engine.state() is FeedState.CONNECTING
 
 
@@ -143,13 +182,13 @@ def test_run_updates_connection_state() -> None:
     adapter.create_feed()
     adapter.run()
 
+    assert adapter.feed is not None
     assert adapter.feed.run_called is True
+
     assert feed_engine.state() is FeedState.CONNECTED
 
-    assert (
-        health.state()
-        is FeedHealthState.STALE
-    )
+    # Connected but no tick received yet.
+    assert health.state() is FeedHealthState.STALE
 
 
 def test_message_is_dispatched() -> None:
@@ -170,11 +209,24 @@ def test_message_is_dispatched() -> None:
     assert len(received) == 1
 
     assert received[0]["security_id"] == "13"
+    assert received[0]["LTP"] == 25000.00
 
-    assert (
-        health.snapshot().messages_received
-        == 1
-    )
+    assert health.snapshot().messages_received == 1
+
+
+def test_read_message_marks_feed_healthy() -> None:
+    subscriptions, _, health, _, adapter = build_adapter()
+
+    add_nifty_subscription(subscriptions)
+
+    adapter.create_feed()
+    adapter.run()
+
+    assert health.state() is FeedHealthState.STALE
+
+    adapter.read_and_dispatch()
+
+    assert health.state() is FeedHealthState.HEALTHY
 
 
 def test_subscribe_current() -> None:
@@ -185,12 +237,18 @@ def test_subscribe_current() -> None:
     adapter.create_feed()
     adapter.subscribe_current()
 
+    assert adapter.feed is not None
     assert adapter.feed.subscribed is not None
 
-    assert (
-        feed_engine.state()
-        is FeedState.SUBSCRIBED
-    )
+    assert adapter.feed.subscribed == [
+        (
+            MarketFeed.IDX,
+            "13",
+            MarketFeed.Ticker,
+        )
+    ]
+
+    assert feed_engine.state() is FeedState.SUBSCRIBED
 
 
 def test_unsubscribe_current() -> None:
@@ -201,7 +259,15 @@ def test_unsubscribe_current() -> None:
     adapter.create_feed()
     adapter.unsubscribe_current()
 
-    assert adapter.feed.unsubscribed is not None
+    assert adapter.feed is not None
+
+    assert adapter.feed.unsubscribed == [
+        (
+            MarketFeed.IDX,
+            "13",
+            MarketFeed.Ticker,
+        )
+    ]
 
 
 def test_disconnect() -> None:
@@ -214,21 +280,29 @@ def test_disconnect() -> None:
 
     feed = adapter.feed
 
+    assert feed is not None
+
     adapter.disconnect()
 
-    assert feed.disconnect_called is True
+    assert feed.close_called is True
 
     assert adapter.feed is None
 
-    assert (
-        feed_engine.state()
-        is FeedState.DISCONNECTED
-    )
+    assert feed_engine.state() is FeedState.DISCONNECTED
 
-    assert (
-        health.state()
-        is FeedHealthState.DISCONNECTED
-    )
+    assert health.state() is FeedHealthState.DISCONNECTED
+
+
+def test_disconnect_without_feed_is_safe() -> None:
+    _, feed_engine, health, _, adapter = build_adapter()
+
+    adapter.disconnect()
+
+    assert adapter.feed is None
+
+    assert feed_engine.state() is FeedState.DISCONNECTED
+
+    assert health.state() is FeedHealthState.DISCONNECTED
 
 
 def test_is_connected() -> None:
