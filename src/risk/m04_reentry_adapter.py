@@ -1,28 +1,24 @@
 """
-Adapter from M07's generic ReentrySyncPort to the existing
-M04 ReentryStateManager API.
+Phoenix M04 Re-entry adapter.
+
+Bridges the generic M07 ReentrySyncPort to the existing
+M04 ReentryStateManager.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from src.execution.position_exit_types import (
-    FilledPositionId,
-)
-from src.strategy.strategy_types import (
-    EntryLevel,
-)
-
-# Import the EXISTING M04 manager here.
-# Do not rename that class.
+from src.execution.position_exit_types import FilledPositionId
+from src.signals.reentry_state_manager import ReentryStateManager
+from src.strategy.strategy_types import EntryLevel
 
 
 class M04ReentryAdapter:
     def __init__(
         self,
         *,
-        manager,
+        manager: ReentryStateManager,
     ) -> None:
         self._manager = manager
 
@@ -33,8 +29,13 @@ class M04ReentryAdapter:
         position_id: FilledPositionId,
         changed_at: datetime,
     ) -> None:
-        # Translate to the EXISTING M04 method.
-        raise NotImplementedError
+        del position_id
+
+        self._manager.mark_open(
+            level,
+            changed_at.date(),
+            changed_at,
+        )
 
     def mark_position_closed(
         self,
@@ -43,5 +44,9 @@ class M04ReentryAdapter:
         position_id: FilledPositionId,
         changed_at: datetime,
     ) -> None:
-        # Translate to the EXISTING M04 method.
-        raise NotImplementedError
+        del position_id
+
+        self._manager.mark_closed(
+            level,
+            changed_at,
+        )
