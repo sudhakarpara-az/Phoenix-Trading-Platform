@@ -218,9 +218,23 @@ class DhanOptionChainAdapter(OptionChainProvider):
 
         if hasattr(
             self._dhan,
+            "option_chain",
+        ):
+            response = self._dhan.option_chain(
+                under_security_id=(
+                    self._underlying_security_id
+                ),
+                under_exchange_segment=(
+                    self._underlying_segment
+                ),
+                expiry=expiry_text,
+            )
+
+        elif hasattr(
+            self._dhan,
             "get_option_chain",
         ):
-            return self._dhan.get_option_chain(
+            response = self._dhan.get_option_chain(
                 underlying_security_id=(
                     self._underlying_security_id
                 ),
@@ -230,19 +244,12 @@ class DhanOptionChainAdapter(OptionChainProvider):
                 expiry_date=expiry_text,
             )
 
-        if hasattr(
-            self._dhan,
-            "option_chain",
-        ):
-            return self._dhan.option_chain(
-                self._underlying_security_id,
-                self._underlying_segment,
-                expiry_text,
+        else:
+            raise RuntimeError(
+                "Dhan client does not expose an option-chain API"
             )
 
-        raise RuntimeError(
-            "Dhan client does not expose an option-chain API"
-        )
+        return response
 
     def _parse_candidates(
         self,
@@ -476,37 +483,108 @@ class DhanOptionChainAdapter(OptionChainProvider):
         response: Any,
         operation: str,
     ) -> Any:
+        """
+        Normalize Dhan REST and SDK wrapper responses.
+
+        Supported examples:
+
+        Raw REST:
+            {
+                "status": "success",
+                "data": {...}
+            }
+
+        SDK wrapper:
+            {
+                "status": "success",
+                "remarks": "",
+                "data": {
+                    "status": "success",
+                    "data": {...}
+                }
+            }
+
+        The method unwraps nested successful ``data`` envelopes
+        while preserving the actual business payload.
+        """
+
         if not isinstance(
             response,
             dict,
         ):
             raise RuntimeError(
-                f"Dhan {operation} returned invalid response"
+                f"Dhan {operation} returned invalid response: "
+                f"{response!r}"
             )
 
-        status = response.get(
-            "status"
+        current: Any = response
+
+        # Dhan SDK versions may wrap the actual API response
+        # inside one or more {"status": ..., "data": ...} envelopes.
+        for _ in range(4):
+
+            if not isinstance(
+                current,
+                dict,
+            ):
+                return current
+
+            status = current.get(
+                "status"
+            )
+
+            if (
+                status is not None
+                and str(status).lower()
+                != "success"
+            ):
+                remarks = current.get(
+                    "remarks"
+                )
+
+                raise RuntimeError(
+                    f"Dhan {operation} failed: "
+                    f"{remarks if remarks else current}"
+                )
+
+            if "data" not in current:
+                # We have reached the actual payload object,
+                # e.g. {"last_price": ..., "oc": {...}}
+                return current
+
+            data = current["data"]
+
+            # If data is a list, that is already the actual
+            # payload for expiry-list responses.
+            if isinstance(
+                data,
+                list,
+            ):
+                return data
+
+            # If data isn't a dictionary, return it and let
+            # the caller validate its expected shape.
+            if not isinstance(
+                data,
+                dict,
+            ):
+                return data
+
+            # If this data object already looks like the
+            # option-chain business payload, stop unwrapping.
+            if (
+                "oc" in data
+                or "last_price" in data
+            ):
+                return data
+
+            # Otherwise this is probably another SDK envelope.
+            current = data
+
+        raise RuntimeError(
+            f"Dhan {operation} response exceeded "
+            "supported wrapper depth"
         )
-
-        if (
-            status is not None
-            and str(status).lower()
-            != "success"
-        ):
-            remarks = response.get(
-                "remarks"
-            )
-
-            raise RuntimeError(
-                f"Dhan {operation} failed: {remarks}"
-            )
-
-        if "data" not in response:
-            raise RuntimeError(
-                f"Dhan {operation} response missing data"
-            )
-
-        return response["data"]
 
     @staticmethod
     def _build_symbol(

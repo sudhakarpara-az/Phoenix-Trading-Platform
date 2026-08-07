@@ -480,3 +480,62 @@ def test_invalid_lot_size_is_rejected() -> None:
             dhan_client=FakeDhanClient(),
             lot_size=0,
         )
+def test_nested_sdk_option_chain_response_is_supported() -> None:
+    raw = make_chain_response()
+
+    nested_response = {
+        "status": "success",
+        "remarks": "",
+        "data": {
+            "status": "success",
+            "data": raw["data"],
+        },
+    }
+
+    adapter = DhanOptionChainAdapter(
+        dhan_client=FakeDhanClient(
+            chain_response=nested_response
+        )
+    )
+
+    snapshot = adapter.get_option_chain(
+        make_request(
+            OptionType.CALL
+        )
+    )
+
+    assert snapshot.count() == 1
+
+    candidate = snapshot.candidates[0]
+
+    assert candidate.contract.security_id == "101"
+    assert candidate.delta == 0.64
+    assert candidate.ltp == 125.50
+def test_nested_sdk_expiry_response_is_supported() -> None:
+    client = FakeDhanClient(
+        expiry_response={
+            "status": "success",
+            "remarks": "",
+            "data": {
+                "status": "success",
+                "data": [
+                    "2026-08-11",
+                    "2026-08-18",
+                ],
+            },
+        }
+    )
+
+    adapter = DhanOptionChainAdapter(
+        dhan_client=client
+    )
+
+    expiry = adapter._resolve_nearest_expiry(
+        date(2026, 8, 7)
+    )
+
+    assert expiry == date(
+        2026,
+        8,
+        11,
+    )
