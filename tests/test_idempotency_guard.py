@@ -239,7 +239,7 @@ def test_attach_intent() -> None:
 
     assert (
         record.intent_id
-        == intent.intent_id
+        == intent.intent_id.value
     )
 
     assert (
@@ -586,3 +586,110 @@ def test_clear() -> None:
     guard.clear()
 
     assert guard.count() == 0
+def test_submitted_key_can_be_released_after_reconciliation() -> None:
+    guard = DuplicateOrderGuard()
+
+    key = IdempotencyKey(
+        "EXIT_POSITION:POS-001"
+    )
+
+    guard.reserve(
+        key=key,
+        created_at=NOW,
+    )
+
+    guard.attach_intent_id(
+        key=key,
+        intent_id="EXIT-001",
+        changed_at=NOW,
+    )
+
+    guard.mark_submitted(
+        key=key,
+        changed_at=NOW,
+    )
+
+    record = (
+        guard.release_after_reconciliation(
+            key=key,
+            changed_at=(
+                NOW
+                + timedelta(seconds=1)
+            ),
+        )
+    )
+
+    assert (
+        record.state
+        is IdempotencyState.RELEASED
+    )
+
+    assert guard.is_blocked(
+        key
+    ) is False
+
+
+def test_reserved_key_cannot_use_reconciliation_release() -> None:
+    guard = DuplicateOrderGuard()
+
+    key = IdempotencyKey(
+        "EXIT_POSITION:POS-001"
+    )
+
+    guard.reserve(
+        key=key,
+        created_at=NOW,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "only SUBMITTED idempotency key "
+            "can be reconciliation-released"
+        ),
+    ):
+        guard.release_after_reconciliation(
+            key=key,
+            changed_at=NOW,
+        )
+
+
+def test_completed_key_cannot_use_reconciliation_release() -> None:
+    guard = DuplicateOrderGuard()
+
+    key = IdempotencyKey(
+        "EXIT_POSITION:POS-001"
+    )
+
+    guard.reserve(
+        key=key,
+        created_at=NOW,
+    )
+
+    guard.attach_intent_id(
+        key=key,
+        intent_id="EXIT-001",
+        changed_at=NOW,
+    )
+
+    guard.mark_submitted(
+        key=key,
+        changed_at=NOW,
+    )
+
+    guard.mark_completed(
+        key=key,
+        changed_at=NOW,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "only SUBMITTED idempotency key "
+            "can be reconciliation-released"
+        ),
+    ):
+        guard.release_after_reconciliation(
+            key=key,
+            changed_at=NOW,
+        )    

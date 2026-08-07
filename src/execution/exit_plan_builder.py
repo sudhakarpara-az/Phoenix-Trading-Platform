@@ -95,17 +95,44 @@ class ExitPlanBuilder:
         *,
         position: FilledPosition,
         created_at: datetime,
+        quantity: int | None = None,
     ) -> ExitPlan:
         """
         Build force-exit instruction.
 
-        Current design uses MARKET for forced session exit.
+        quantity defaults to the full position quantity.
+
+        During reconciliation, quantity may represent only the
+        remaining open position after a partial target fill.
         """
 
-        return self._build_non_target_exit(
-            position=position,
+        exit_quantity = (
+            position.quantity
+            if quantity is None
+            else quantity
+        )
+
+        if exit_quantity <= 0:
+            raise ValueError(
+                "force exit quantity must be greater than zero"
+            )
+
+        if exit_quantity > position.quantity:
+            raise ValueError(
+                "force exit quantity cannot exceed position quantity"
+            )
+
+        return ExitPlan(
+            position_id=position.position_id,
+            security_id=position.security_id,
+            symbol=position.symbol,
+            option_type=position.option_type,
+            quantity=exit_quantity,
             reason=ExitReason.FORCE_EXIT,
             order_type=ExitOrderType.MARKET,
+            mapped_target_price=None,
+            target_plan=None,
+            exit_price=None,
             created_at=created_at,
         )
 

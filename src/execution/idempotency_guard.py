@@ -1,10 +1,11 @@
 """
 Phoenix execution idempotency / duplicate-order guard.
 
-Prevents the same logical strategy signal from creating
-multiple broker BUY orders.
+Prevents the same logical execution request from creating
+multiple broker orders.
 
-The guard is broker-independent and thread-safe.
+The guard is broker-independent, thread-safe, and can be used
+for both entry BUY intents and exit SELL intents.
 """
 
 from __future__ import annotations
@@ -13,11 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from threading import RLock
+from typing import Any
 
-from src.execution.execution_types import (
-    OrderIntent,
-    OrderIntentId,
-)
 from src.signals.signal_types import SignalId
 
 
@@ -32,9 +30,6 @@ class IdempotencyState(str, Enum):
 class IdempotencyKey:
     """
     Stable logical execution identity.
-
-    For current Phoenix architecture, one signal ID should
-    produce at most one entry order.
     """
 
     value: str
@@ -57,11 +52,21 @@ class IdempotencyKey:
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyRecord:
+    """
+    Current idempotency state for one logical execution.
+
+    intent_id is stored as a plain string so the same guard
+    can support:
+
+        OrderIntentId
+        ExitOrderIntentId
+    """
+
     key: IdempotencyKey
 
     state: IdempotencyState
 
-    intent_id: OrderIntentId | None
+    intent_id: str | None
 
     created_at: datetime
     updated_at: datetime
@@ -78,13 +83,15 @@ class IdempotencyReservationResult:
 
 class DuplicateOrderGuard:
     """
-    Thread-safe idempotency guard.
+    Thread-safe execution idempotency guard.
 
     Lifecycle:
 
         reserve()
             ↓
         RESERVED
+            ↓
+        attach_intent() / attach_intent_id()
             ↓
         mark_submitted()
             ↓
@@ -94,13 +101,18 @@ class DuplicateOrderGuard:
             ↓
         COMPLETED
 
-    If no broker submission happened, a RESERVED key may be:
+    If no broker submission occurred:
 
+        RESERVED
+            ↓
         release()
             ↓
         RELEASED
 
-    A released key may later be reserved again.
+    RELEASED keys may later be reserved again.
+
+    SUBMITTED and COMPLETED keys must never be released
+    automatically.
     """
 
     def __init__(self) -> None:
@@ -120,7 +132,7 @@ class DuplicateOrderGuard:
         """
         Atomically reserve one logical execution key.
 
-        Returns acquired=False when an active or completed
+        Returns acquired=False if an active/completed
         reservation already exists.
         """
 
@@ -156,16 +168,23 @@ class DuplicateOrderGuard:
                 existing_record=None,
             )
 
-    def attach_intent(
+    def attach_intent_id(
         self,
         *,
         key: IdempotencyKey,
-        intent: OrderIntent,
+        intent_id: str,
         changed_at: datetime,
     ) -> IdempotencyRecord:
         """
-        Associate the generated OrderIntent with a reservation.
+        Associate a plain intent identifier with a reservation.
+
+        Used by both entry and exit execution services.
         """
+
+        if not intent_id.strip():
+            raise ValueError(
+                "intent_id cannot be empty"
+            )
 
         with self._lock:
             record = self._require_record(
@@ -189,7 +208,7 @@ class DuplicateOrderGuard:
             updated = IdempotencyRecord(
                 key=record.key,
                 state=record.state,
-                intent_id=intent.intent_id,
+                intent_id=intent_id,
                 created_at=record.created_at,
                 updated_at=changed_at,
             )
@@ -198,6 +217,48 @@ class DuplicateOrderGuard:
 
             return updated
 
+    def attach_intent(
+        self,
+        *,
+        key: IdempotencyKey,
+        intent: Any,
+        changed_at: datetime,
+    ) -> IdempotencyRecord:
+        """
+        Backward-compatible helper.
+
+        Supports existing Phoenix entry OrderIntent objects
+        and any future intent object exposing:
+
+            intent.intent_id.value
+        """
+
+        if not hasattr(
+            intent,
+            "intent_id",
+        ):
+            raise ValueError(
+                "intent must contain intent_id"
+            )
+
+        intent_id = intent.intent_id
+
+        if not hasattr(
+            intent_id,
+            "value",
+        ):
+            raise ValueError(
+                "intent.intent_id must contain value"
+            )
+
+        return self.attach_intent_id(
+            key=key,
+            intent_id=str(
+                intent_id.value
+            ),
+            changed_at=changed_at,
+        )
+
     def mark_submitted(
         self,
         *,
@@ -205,7 +266,10 @@ class DuplicateOrderGuard:
         changed_at: datetime,
     ) -> IdempotencyRecord:
         """
-        Mark that the order reached broker submission.
+        Mark that broker submission has been attempted.
+
+        Once SUBMITTED, this key cannot safely be released
+        automatically because the broker order may exist.
         """
 
         with self._lock:
@@ -246,9 +310,9 @@ class DuplicateOrderGuard:
         changed_at: datetime,
     ) -> IdempotencyRecord:
         """
-        Permanently complete the logical entry execution.
+        Complete one logical execution.
 
-        COMPLETED keys cannot be reused.
+        COMPLETED keys block future duplicate submissions.
         """
 
         with self._lock:
@@ -286,10 +350,7 @@ class DuplicateOrderGuard:
         """
         Release an unused reservation.
 
-        Safety rule:
-        SUBMITTED and COMPLETED keys must never be released,
-        because doing so could create a second broker order
-        while the first order may still exist.
+        Only RESERVED records may be released.
         """
 
         with self._lock:
@@ -318,6 +379,50 @@ class DuplicateOrderGuard:
 
             return updated
 
+    def release_after_reconciliation(
+        self,
+        *,
+        key: IdempotencyKey,
+        changed_at: datetime,
+    ) -> IdempotencyRecord:
+        """
+        Explicitly release a SUBMITTED idempotency key after
+        external broker reconciliation proves that the previous
+        order can no longer execute.
+
+        This method must only be called after Phoenix has
+        confirmed the broker order is CANCELLED.
+
+        Normal code must continue using release(), which permits
+        only RESERVED -> RELEASED.
+        """
+
+        with self._lock:
+            record = self._require_record(
+                key
+            )
+
+            if (
+                record.state
+                is not IdempotencyState.SUBMITTED
+            ):
+                raise RuntimeError(
+                    "only SUBMITTED idempotency key "
+                    "can be reconciliation-released"
+                )
+
+            updated = IdempotencyRecord(
+                key=record.key,
+                state=IdempotencyState.RELEASED,
+                intent_id=record.intent_id,
+                created_at=record.created_at,
+                updated_at=changed_at,
+            )
+
+            self._records[key.value] = updated
+
+            return updated
+
     def get(
         self,
         key: IdempotencyKey,
@@ -332,7 +437,8 @@ class DuplicateOrderGuard:
         key: IdempotencyKey,
     ) -> bool:
         """
-        True when a key must not produce another order.
+        True when another order must not be generated
+        for this logical execution key.
         """
 
         with self._lock:
@@ -356,7 +462,7 @@ class DuplicateOrderGuard:
 
     def clear(self) -> None:
         """
-        Test/session reset helper.
+        Controlled test/session reset helper.
         """
 
         with self._lock:
