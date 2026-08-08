@@ -56,6 +56,7 @@ NOW = datetime(
 
 
 EXPECTED_TABLES = {
+    # M08 Runtime / Trading persistence
     "runtime_sessions",
     "signals",
     "option_selections",
@@ -65,6 +66,14 @@ EXPECTED_TABLES = {
     "pnl_snapshots",
     "risk_snapshots",
     "audit_events",
+
+    # M09 Broker / Account persistence
+    "broker_accounts",
+    "broker_sessions",
+    "account_fund_snapshots",
+    "broker_connectivity_snapshots",
+    "account_health_snapshots",
+    "account_eligibility_snapshots",
 }
 
 

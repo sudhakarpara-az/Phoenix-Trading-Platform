@@ -26,7 +26,7 @@ No repository logic or runtime orchestration belongs here.
 """
 
 from __future__ import annotations
-
+from decimal import Decimal
 from datetime import (
     date,
     datetime,
@@ -39,6 +39,8 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Numeric,
     Index,
     Integer,
     MetaData,
@@ -1254,4 +1256,481 @@ def drop_schema(
 
     Base.metadata.drop_all(
         bind=engine
+    )
+
+# ============================================================
+# M09 Broker / Account persistence
+# ============================================================
+
+
+class BrokerAccountRecord(Base):
+    """
+    Current broker-account identity and latest profile state.
+
+    Credentials, access tokens, passwords and TOTP secrets
+    must never be stored here.
+    """
+
+    __tablename__ = "broker_accounts"
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        primary_key=True,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    account_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    client_name: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+
+    trading_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    product_type: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    profile_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "broker IN ('DHAN')",
+            name="ck_broker_accounts_broker",
+        ),
+        CheckConstraint(
+            "account_status IN "
+            "('UNKNOWN', 'ACTIVE', 'INACTIVE', 'BLOCKED')",
+            name="ck_broker_accounts_status",
+        ),
+    )
+
+
+class BrokerSessionRecord(Base):
+    """
+    Historical broker-session state snapshot.
+
+    No authentication secret or token is persisted.
+    """
+
+    __tablename__ = "broker_sessions"
+
+    session_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    authenticated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    failure_message: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_broker_sessions_account",
+        ),
+        CheckConstraint(
+            "status IN ("
+            "'NOT_INITIALIZED', "
+            "'AUTHENTICATING', "
+            "'AUTHENTICATED', "
+            "'EXPIRED', "
+            "'FAILED', "
+            "'CLOSED'"
+            ")",
+            name="ck_broker_sessions_status",
+        ),
+    )
+
+
+class AccountFundSnapshotRecord(Base):
+    """
+    Historical funds / margin snapshot.
+    """
+
+    __tablename__ = "account_fund_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    available_cash: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        nullable=False,
+    )
+
+    available_margin: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        nullable=False,
+    )
+
+    utilized_margin: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        nullable=False,
+    )
+
+    collateral: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        nullable=False,
+        default=Decimal("0"),
+    )
+
+    opening_balance: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2),
+        nullable=True,
+    )
+
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_account_funds_account",
+        ),
+        CheckConstraint(
+            "available_cash >= 0",
+            name="ck_account_funds_cash_nonnegative",
+        ),
+        CheckConstraint(
+            "available_margin >= 0",
+            name="ck_account_funds_margin_nonnegative",
+        ),
+        CheckConstraint(
+            "utilized_margin >= 0",
+            name="ck_account_funds_utilized_nonnegative",
+        ),
+        CheckConstraint(
+            "collateral >= 0",
+            name="ck_account_funds_collateral_nonnegative",
+        ),
+        CheckConstraint(
+            "opening_balance IS NULL "
+            "OR opening_balance >= 0",
+            name="ck_account_funds_opening_nonnegative",
+        ),
+    )
+
+
+class BrokerConnectivitySnapshotRecord(Base):
+    """
+    Historical broker connectivity state.
+    """
+
+    __tablename__ = "broker_connectivity_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    connected: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+    )
+
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    message: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    latency_ms: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_broker_connectivity_account",
+        ),
+        CheckConstraint(
+            "latency_ms IS NULL OR latency_ms >= 0",
+            name="ck_broker_connectivity_latency",
+        ),
+    )
+
+
+class AccountHealthSnapshotRecord(Base):
+    """
+    Historical aggregate account-health state.
+    """
+
+    __tablename__ = "account_health_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    broker_connected: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+    )
+
+    session_authenticated: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+    )
+
+    profile_available: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+    )
+
+    funds_available: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+    )
+
+    message: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_account_health_account",
+        ),
+        CheckConstraint(
+            "status IN ("
+            "'UNKNOWN', "
+            "'HEALTHY', "
+            "'DEGRADED', "
+            "'UNHEALTHY'"
+            ")",
+            name="ck_account_health_status",
+        ),
+    )
+
+
+class AccountEligibilitySnapshotRecord(Base):
+    """
+    Historical M09 new-entry eligibility decision.
+    """
+
+    __tablename__ = "account_eligibility_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    reason: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    message: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    available_cash: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2),
+        nullable=True,
+    )
+
+    required_cash: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_account_eligibility_account",
+        ),
+        CheckConstraint(
+            "status IN ('ALLOWED', 'BLOCKED')",
+            name="ck_account_eligibility_status",
+        ),
+        CheckConstraint(
+            "reason IN ("
+            "'ELIGIBLE', "
+            "'ACCOUNT_STATUS_UNKNOWN', "
+            "'ACCOUNT_INACTIVE', "
+            "'ACCOUNT_BLOCKED', "
+            "'TRADING_NOT_ENABLED', "
+            "'SESSION_NOT_AUTHENTICATED', "
+            "'SESSION_EXPIRED', "
+            "'SESSION_FAILED', "
+            "'BROKER_UNAVAILABLE', "
+            "'PROFILE_UNAVAILABLE', "
+            "'FUNDS_UNAVAILABLE', "
+            "'INSUFFICIENT_FUNDS'"
+            ")",
+            name="ck_account_eligibility_reason",
+        ),
+        CheckConstraint(
+            "available_cash IS NULL "
+            "OR available_cash >= 0",
+            name="ck_account_eligibility_cash",
+        ),
+        CheckConstraint(
+            "required_cash IS NULL "
+            "OR required_cash >= 0",
+            name="ck_account_eligibility_required",
+        ),
+        CheckConstraint(
+            "("
+            "status = 'ALLOWED' "
+            "AND reason = 'ELIGIBLE'"
+            ") OR ("
+            "status = 'BLOCKED' "
+            "AND reason != 'ELIGIBLE'"
+            ")",
+            name="ck_account_eligibility_consistency",
+        ),
     )
