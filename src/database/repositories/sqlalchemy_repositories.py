@@ -41,6 +41,12 @@ from src.database.schema import (
     RiskSnapshotRecord,
     RuntimeSessionRecord,
     SignalRecord,
+    AccountEligibilitySnapshotRecord,
+    AccountFundSnapshotRecord,
+    AccountHealthSnapshotRecord,
+    BrokerAccountRecord,
+    BrokerConnectivitySnapshotRecord,
+    BrokerSessionRecord,
 )
 from src.database.session import (
     DatabaseSessionManager,
@@ -735,3 +741,576 @@ class SQLAlchemyAuditEventRepository(
                 AuditEventRecord.occurred_at
             )
         )
+
+# ============================================================
+# M09 Broker / Account repositories
+# ============================================================
+
+
+class SQLAlchemyBrokerAccountRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: BrokerAccountRecord,
+    ) -> BrokerAccountRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerAccountRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                BrokerAccountRecord,
+                {
+                    "broker": broker,
+                    "account_id": account_id,
+                },
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerAccountRecord:
+        record = self.get(
+            broker=broker,
+            account_id=account_id,
+        )
+
+        if record is None:
+            raise KeyError(
+                "broker account not found: "
+                f"{broker}:{account_id}"
+            )
+
+        return record
+
+    def update(
+        self,
+        record: BrokerAccountRecord,
+    ) -> BrokerAccountRecord:
+        with self._sessions.session_scope() as session:
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
+
+    def list_all(
+        self,
+    ) -> tuple[
+        BrokerAccountRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    BrokerAccountRecord
+                )
+                .order_by(
+                    BrokerAccountRecord.broker,
+                    BrokerAccountRecord.account_id,
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+
+class SQLAlchemyBrokerSessionRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: BrokerSessionRecord,
+    ) -> BrokerSessionRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        session_id: str,
+    ) -> BrokerSessionRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                BrokerSessionRecord,
+                session_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        session_id: str,
+    ) -> BrokerSessionRecord:
+        record = self.get(
+            session_id
+        )
+
+        if record is None:
+            raise KeyError(
+                "broker session not found: "
+                f"{session_id}"
+            )
+
+        return record
+
+    def list_by_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> tuple[
+        BrokerSessionRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    BrokerSessionRecord
+                )
+                .filter(
+                    BrokerSessionRecord.broker
+                    == broker,
+                    BrokerSessionRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    BrokerSessionRecord.updated_at
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerSessionRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    BrokerSessionRecord
+                )
+                .filter(
+                    BrokerSessionRecord.broker
+                    == broker,
+                    BrokerSessionRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    BrokerSessionRecord.updated_at.desc()
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+
+class SQLAlchemyAccountFundSnapshotRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: AccountFundSnapshotRecord,
+    ) -> AccountFundSnapshotRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountFundSnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                AccountFundSnapshotRecord,
+                snapshot_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        snapshot_id: str,
+    ) -> AccountFundSnapshotRecord:
+        record = self.get(
+            snapshot_id
+        )
+
+        if record is None:
+            raise KeyError(
+                "account funds snapshot not found: "
+                f"{snapshot_id}"
+            )
+
+        return record
+
+    def list_by_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> tuple[
+        AccountFundSnapshotRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    AccountFundSnapshotRecord
+                )
+                .filter(
+                    AccountFundSnapshotRecord.broker
+                    == broker,
+                    AccountFundSnapshotRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    AccountFundSnapshotRecord.fetched_at
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountFundSnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    AccountFundSnapshotRecord
+                )
+                .filter(
+                    AccountFundSnapshotRecord.broker
+                    == broker,
+                    AccountFundSnapshotRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    AccountFundSnapshotRecord.fetched_at.desc()
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+
+class SQLAlchemyBrokerConnectivitySnapshotRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record:
+            BrokerConnectivitySnapshotRecord,
+    ) -> BrokerConnectivitySnapshotRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> BrokerConnectivitySnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                BrokerConnectivitySnapshotRecord,
+                snapshot_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerConnectivitySnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    BrokerConnectivitySnapshotRecord
+                )
+                .filter(
+                    BrokerConnectivitySnapshotRecord.broker
+                    == broker,
+                    BrokerConnectivitySnapshotRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    BrokerConnectivitySnapshotRecord
+                    .checked_at.desc()
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+
+class SQLAlchemyAccountHealthSnapshotRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: AccountHealthSnapshotRecord,
+    ) -> AccountHealthSnapshotRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountHealthSnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                AccountHealthSnapshotRecord,
+                snapshot_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountHealthSnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    AccountHealthSnapshotRecord
+                )
+                .filter(
+                    AccountHealthSnapshotRecord.broker
+                    == broker,
+                    AccountHealthSnapshotRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    AccountHealthSnapshotRecord
+                    .checked_at.desc()
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+
+class SQLAlchemyAccountEligibilitySnapshotRepository:
+    def __init__(
+        self,
+        *,
+        sessions,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record:
+            AccountEligibilitySnapshotRecord,
+    ) -> AccountEligibilitySnapshotRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountEligibilitySnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                AccountEligibilitySnapshotRecord,
+                snapshot_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountEligibilitySnapshotRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    AccountEligibilitySnapshotRecord
+                )
+                .filter(
+                    AccountEligibilitySnapshotRecord.broker
+                    == broker,
+                    AccountEligibilitySnapshotRecord.account_id
+                    == account_id,
+                )
+                .order_by(
+                    AccountEligibilitySnapshotRecord
+                    .evaluated_at.desc()
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record    
