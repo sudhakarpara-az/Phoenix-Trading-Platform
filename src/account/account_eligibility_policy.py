@@ -24,9 +24,11 @@ Those remain independent safety gates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from src.account.connectivity_monitor import (
+    BrokerConnectivitySnapshot,
+)
 
 from src.account.account_types import (
     AccountEligibilityReason,
@@ -41,27 +43,6 @@ from src.account.account_types import (
 from src.account.funds_provider import (
     AccountFundsService,
 )
-
-
-@dataclass(
-    frozen=True,
-    slots=True,
-)
-class BrokerConnectivitySnapshot:
-    """
-    Lightweight connectivity input for T05.
-
-    T06 will replace this with a dedicated monitor/service
-    while preserving the eligibility contract.
-    """
-
-    broker: BrokerType
-
-    account_id: BrokerAccountId
-
-    connected: bool
-
-    checked_at: datetime
 
 
 class AccountTradingEligibilityPolicy:

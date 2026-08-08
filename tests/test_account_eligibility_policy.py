@@ -9,6 +9,8 @@ import pytest
 
 from src.account.account_eligibility_policy import (
     AccountTradingEligibilityPolicy,
+)
+from src.account.connectivity_monitor import (
     BrokerConnectivitySnapshot,
 )
 from src.account.account_types import (
