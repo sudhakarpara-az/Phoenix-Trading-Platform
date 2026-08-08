@@ -6,14 +6,21 @@ by the Phoenix runtime.
 
 No SQLAlchemy imports belong in this module.
 """
-
+from typing import Protocol
 from __future__ import annotations
 
 from typing import (
     Protocol,
     TypeVar,
 )
-
+from src.database.schema import (
+    AccountEligibilitySnapshotRecord,
+    AccountFundSnapshotRecord,
+    AccountHealthSnapshotRecord,
+    BrokerAccountRecord,
+    BrokerConnectivitySnapshotRecord,
+    BrokerSessionRecord,
+)
 
 T = TypeVar("T")
 
@@ -179,4 +186,190 @@ class AuditEventRepository(
         entity_type: str,
         entity_id: str,
     ) -> tuple[T, ...]:
+        ...
+
+# ============================================================
+# M09 Broker / Account repositories
+# ============================================================
+
+
+class BrokerAccountRepository(Protocol):
+    def add(
+        self,
+        record: BrokerAccountRecord,
+    ) -> BrokerAccountRecord:
+        ...
+
+    def get(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerAccountRecord | None:
+        ...
+
+    def require(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerAccountRecord:
+        ...
+
+    def update(
+        self,
+        record: BrokerAccountRecord,
+    ) -> BrokerAccountRecord:
+        ...
+
+    def list_all(
+        self,
+    ) -> tuple[
+        BrokerAccountRecord,
+        ...
+    ]:
+        ...
+
+
+class BrokerSessionRepository(Protocol):
+    def add(
+        self,
+        record: BrokerSessionRecord,
+    ) -> BrokerSessionRecord:
+        ...
+
+    def get(
+        self,
+        session_id: str,
+    ) -> BrokerSessionRecord | None:
+        ...
+
+    def require(
+        self,
+        session_id: str,
+    ) -> BrokerSessionRecord:
+        ...
+
+    def list_by_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> tuple[
+        BrokerSessionRecord,
+        ...
+    ]:
+        ...
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerSessionRecord | None:
+        ...
+
+
+class AccountFundSnapshotRepository(Protocol):
+    def add(
+        self,
+        record: AccountFundSnapshotRecord,
+    ) -> AccountFundSnapshotRecord:
+        ...
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountFundSnapshotRecord | None:
+        ...
+
+    def require(
+        self,
+        snapshot_id: str,
+    ) -> AccountFundSnapshotRecord:
+        ...
+
+    def list_by_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> tuple[
+        AccountFundSnapshotRecord,
+        ...
+    ]:
+        ...
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountFundSnapshotRecord | None:
+        ...
+
+
+class BrokerConnectivitySnapshotRepository(Protocol):
+    def add(
+        self,
+        record: BrokerConnectivitySnapshotRecord,
+    ) -> BrokerConnectivitySnapshotRecord:
+        ...
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> BrokerConnectivitySnapshotRecord | None:
+        ...
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> BrokerConnectivitySnapshotRecord | None:
+        ...
+
+
+class AccountHealthSnapshotRepository(Protocol):
+    def add(
+        self,
+        record: AccountHealthSnapshotRecord,
+    ) -> AccountHealthSnapshotRecord:
+        ...
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountHealthSnapshotRecord | None:
+        ...
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountHealthSnapshotRecord | None:
+        ...
+
+
+class AccountEligibilitySnapshotRepository(Protocol):
+    def add(
+        self,
+        record: AccountEligibilitySnapshotRecord,
+    ) -> AccountEligibilitySnapshotRecord:
+        ...
+
+    def get(
+        self,
+        snapshot_id: str,
+    ) -> AccountEligibilitySnapshotRecord | None:
+        ...
+
+    def latest_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> AccountEligibilitySnapshotRecord | None:
         ...
