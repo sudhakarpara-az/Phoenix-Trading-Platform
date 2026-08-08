@@ -1,0 +1,737 @@
+"""
+Phoenix M08 SQLAlchemy repository implementations.
+
+Responsibilities:
+    - CRUD operations
+    - explicit persistence boundaries
+    - runtime recovery queries
+    - open-order queries
+    - open-position queries
+    - historical P&L/risk lookup
+    - audit lookup
+
+Repositories never own business rules.
+
+Business logic remains in M03-M07.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import (
+    Generic,
+    TypeVar,
+)
+
+from sqlalchemy import (
+    Select,
+    select,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+)
+
+from src.database.schema import (
+    AuditEventRecord,
+    OptionSelectionRecord,
+    OrderFillRecord,
+    OrderRecord,
+    PnLSnapshotRecord,
+    PositionRecord,
+    RiskSnapshotRecord,
+    RuntimeSessionRecord,
+    SignalRecord,
+)
+from src.database.session import (
+    DatabaseSessionManager,
+)
+
+
+RecordT = TypeVar(
+    "RecordT",
+    bound=DeclarativeBase,
+)
+
+
+class RepositoryRecordNotFoundError(
+    KeyError
+):
+    """
+    Requested persistence record does not exist.
+    """
+
+
+class DuplicateRepositoryRecordError(
+    ValueError
+):
+    """
+    Repository was asked to add an identity that already exists.
+    """
+
+
+class SQLAlchemyRepository(
+    Generic[RecordT],
+):
+    """
+    Base SQLAlchemy repository.
+
+    Concrete repositories specify:
+        model
+        primary_key_attribute
+    """
+
+    model: type[RecordT]
+
+    primary_key_attribute: str
+
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: RecordT,
+    ) -> RecordT:
+        """
+        Persist a new record.
+
+        Duplicate primary-key identities are rejected explicitly
+        rather than relying on the later database exception.
+        """
+
+        identity = self._identity_from_record(
+            record
+        )
+
+        with self._sessions.session_scope() as session:
+            existing = session.get(
+                self.model,
+                identity,
+            )
+
+            if existing is not None:
+                raise DuplicateRepositoryRecordError(
+                    f"{self.model.__name__} "
+                    f"already exists: {identity}"
+                )
+
+            session.add(
+                record
+            )
+
+            session.flush()
+
+            # Detach before Session closes so repository callers
+            # may safely inspect the returned persistence record.
+            session.expunge(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        identity: str,
+    ) -> RecordT | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                self.model,
+                identity,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        identity: str,
+    ) -> RecordT:
+        record = self.get(
+            identity
+        )
+
+        if record is None:
+            raise RepositoryRecordNotFoundError(
+                f"{self.model.__name__} "
+                f"not found: {identity}"
+            )
+
+        return record
+
+    def delete(
+        self,
+        identity: str,
+    ) -> bool:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                self.model,
+                identity,
+            )
+
+            if record is None:
+                return False
+
+            session.delete(
+                record
+            )
+
+        return True
+
+    def update(
+        self,
+        record: RecordT,
+    ) -> RecordT:
+        """
+        Replace/update an existing ORM record.
+
+        Intended for mutable persistence state such as:
+            runtime state
+            order state
+            position state
+
+        Business validation must have occurred before this layer.
+        """
+
+        identity = self._identity_from_record(
+            record
+        )
+
+        with self._sessions.session_scope() as session:
+            existing = session.get(
+                self.model,
+                identity,
+            )
+
+            if existing is None:
+                raise RepositoryRecordNotFoundError(
+                    f"{self.model.__name__} "
+                    f"not found: {identity}"
+                )
+
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
+
+    def _identity_from_record(
+        self,
+        record: RecordT,
+    ) -> str:
+        value = getattr(
+            record,
+            self.primary_key_attribute,
+        )
+
+        if not value:
+            raise ValueError(
+                "repository record identity "
+                "cannot be empty"
+            )
+
+        return str(
+            value
+        )
+
+    def _all(
+        self,
+        statement: Select,
+    ) -> tuple[RecordT, ...]:
+        with self._sessions.session_scope() as session:
+            records = tuple(
+                session.scalars(
+                    statement
+                ).all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return records
+
+    def _first(
+        self,
+        statement: Select,
+    ) -> RecordT | None:
+        with self._sessions.session_scope() as session:
+            record = session.scalars(
+                statement
+            ).first()
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+
+# ============================================================
+# Runtime repository
+# ============================================================
+
+
+class SQLAlchemyRuntimeSessionRepository(
+    SQLAlchemyRepository[
+        RuntimeSessionRecord
+    ],
+):
+    model = RuntimeSessionRecord
+    primary_key_attribute = "runtime_id"
+
+    def latest(
+        self,
+    ) -> RuntimeSessionRecord | None:
+        return self._first(
+            select(
+                RuntimeSessionRecord
+            )
+            .order_by(
+                RuntimeSessionRecord
+                .updated_at
+                .desc()
+            )
+        )
+
+    def latest_for_trading_date(
+        self,
+        trading_date: date,
+    ) -> RuntimeSessionRecord | None:
+        return self._first(
+            select(
+                RuntimeSessionRecord
+            )
+            .where(
+                RuntimeSessionRecord
+                .trading_date
+                == trading_date
+            )
+            .order_by(
+                RuntimeSessionRecord
+                .updated_at
+                .desc()
+            )
+        )
+
+
+# ============================================================
+# Signal repository
+# ============================================================
+
+
+class SQLAlchemySignalRepository(
+    SQLAlchemyRepository[
+        SignalRecord
+    ],
+):
+    model = SignalRecord
+    primary_key_attribute = "signal_id"
+
+    def list_by_runtime(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        SignalRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                SignalRecord
+            )
+            .where(
+                SignalRecord.runtime_id
+                == runtime_id
+            )
+            .order_by(
+                SignalRecord.created_at
+            )
+        )
+
+
+# ============================================================
+# Option Selection repository
+# ============================================================
+
+
+class SQLAlchemyOptionSelectionRepository(
+    SQLAlchemyRepository[
+        OptionSelectionRecord
+    ],
+):
+    model = OptionSelectionRecord
+    primary_key_attribute = (
+        "selection_id"
+    )
+
+    def get_by_signal(
+        self,
+        signal_id: str,
+    ) -> OptionSelectionRecord | None:
+        return self._first(
+            select(
+                OptionSelectionRecord
+            )
+            .where(
+                OptionSelectionRecord
+                .signal_id
+                == signal_id
+            )
+        )
+
+
+# ============================================================
+# Order repository
+# ============================================================
+
+
+class SQLAlchemyOrderRepository(
+    SQLAlchemyRepository[
+        OrderRecord
+    ],
+):
+    model = OrderRecord
+    primary_key_attribute = (
+        "order_intent_id"
+    )
+
+    _TERMINAL_STATUSES = (
+        "FILLED",
+        "CANCELLED",
+        "REJECTED",
+        "FAILED",
+    )
+
+    def list_by_runtime(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        OrderRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                OrderRecord
+            )
+            .where(
+                OrderRecord.runtime_id
+                == runtime_id
+            )
+            .order_by(
+                OrderRecord.created_at
+            )
+        )
+
+    def list_open_orders(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        OrderRecord,
+        ...
+    ]:
+        """
+        Recovery-oriented query.
+
+        Any non-terminal order must be inspected/reconciled
+        before Phoenix assumes execution state.
+        """
+
+        return self._all(
+            select(
+                OrderRecord
+            )
+            .where(
+                OrderRecord.runtime_id
+                == runtime_id
+            )
+            .where(
+                OrderRecord.status.not_in(
+                    self._TERMINAL_STATUSES
+                )
+            )
+            .order_by(
+                OrderRecord.updated_at
+            )
+        )
+
+    def get_by_broker_order_id(
+        self,
+        broker_order_id: str,
+    ) -> OrderRecord | None:
+        return self._first(
+            select(
+                OrderRecord
+            )
+            .where(
+                OrderRecord
+                .broker_order_id
+                == broker_order_id
+            )
+        )
+
+
+# ============================================================
+# Fill repository
+# ============================================================
+
+
+class SQLAlchemyOrderFillRepository(
+    SQLAlchemyRepository[
+        OrderFillRecord
+    ],
+):
+    model = OrderFillRecord
+    primary_key_attribute = "fill_id"
+
+    def list_by_order(
+        self,
+        order_intent_id: str,
+    ) -> tuple[
+        OrderFillRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                OrderFillRecord
+            )
+            .where(
+                OrderFillRecord
+                .order_intent_id
+                == order_intent_id
+            )
+            .order_by(
+                OrderFillRecord.filled_at
+            )
+        )
+
+
+# ============================================================
+# Position repository
+# ============================================================
+
+
+class SQLAlchemyPositionRepository(
+    SQLAlchemyRepository[
+        PositionRecord
+    ],
+):
+    model = PositionRecord
+    primary_key_attribute = "position_id"
+
+    def list_by_runtime(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        PositionRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                PositionRecord
+            )
+            .where(
+                PositionRecord.runtime_id
+                == runtime_id
+            )
+            .order_by(
+                PositionRecord.opened_at
+            )
+        )
+
+    def list_open_positions(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        PositionRecord,
+        ...
+    ]:
+        """
+        Quantity is authoritative for actual remaining exposure.
+
+        State is intentionally not used as the sole filter.
+        """
+
+        return self._all(
+            select(
+                PositionRecord
+            )
+            .where(
+                PositionRecord.runtime_id
+                == runtime_id
+            )
+            .where(
+                PositionRecord.open_quantity
+                > 0
+            )
+            .order_by(
+                PositionRecord.opened_at
+            )
+        )
+
+
+# ============================================================
+# P&L repository
+# ============================================================
+
+
+class SQLAlchemyPnLSnapshotRepository(
+    SQLAlchemyRepository[
+        PnLSnapshotRecord
+    ],
+):
+    model = PnLSnapshotRecord
+    primary_key_attribute = (
+        "snapshot_id"
+    )
+
+    def list_by_position(
+        self,
+        position_id: str,
+    ) -> tuple[
+        PnLSnapshotRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                PnLSnapshotRecord
+            )
+            .where(
+                PnLSnapshotRecord.position_id
+                == position_id
+            )
+            .order_by(
+                PnLSnapshotRecord.captured_at
+            )
+        )
+
+    def latest_for_position(
+        self,
+        position_id: str,
+    ) -> PnLSnapshotRecord | None:
+        return self._first(
+            select(
+                PnLSnapshotRecord
+            )
+            .where(
+                PnLSnapshotRecord.position_id
+                == position_id
+            )
+            .order_by(
+                PnLSnapshotRecord
+                .captured_at
+                .desc()
+            )
+        )
+
+
+# ============================================================
+# Risk repository
+# ============================================================
+
+
+class SQLAlchemyRiskSnapshotRepository(
+    SQLAlchemyRepository[
+        RiskSnapshotRecord
+    ],
+):
+    model = RiskSnapshotRecord
+    primary_key_attribute = (
+        "snapshot_id"
+    )
+
+    def latest_for_runtime(
+        self,
+        runtime_id: str,
+    ) -> RiskSnapshotRecord | None:
+        return self._first(
+            select(
+                RiskSnapshotRecord
+            )
+            .where(
+                RiskSnapshotRecord.runtime_id
+                == runtime_id
+            )
+            .order_by(
+                RiskSnapshotRecord
+                .captured_at
+                .desc()
+            )
+        )
+
+
+# ============================================================
+# Audit repository
+# ============================================================
+
+
+class SQLAlchemyAuditEventRepository(
+    SQLAlchemyRepository[
+        AuditEventRecord
+    ],
+):
+    model = AuditEventRecord
+    primary_key_attribute = "event_id"
+
+    def list_by_runtime(
+        self,
+        runtime_id: str,
+    ) -> tuple[
+        AuditEventRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                AuditEventRecord
+            )
+            .where(
+                AuditEventRecord.runtime_id
+                == runtime_id
+            )
+            .order_by(
+                AuditEventRecord.occurred_at
+            )
+        )
+
+    def list_by_entity(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+    ) -> tuple[
+        AuditEventRecord,
+        ...
+    ]:
+        return self._all(
+            select(
+                AuditEventRecord
+            )
+            .where(
+                AuditEventRecord.entity_type
+                == entity_type
+            )
+            .where(
+                AuditEventRecord.entity_id
+                == entity_id
+            )
+            .order_by(
+                AuditEventRecord.occurred_at
+            )
+        )
