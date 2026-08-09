@@ -601,7 +601,8 @@ def test_malformed_dhan_response_missing_oc_raises() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     request = OptionChainRequest(
@@ -637,7 +638,8 @@ def test_dhan_failure_response_raises() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     request = OptionChainRequest(
@@ -688,7 +690,8 @@ def test_dhan_missing_security_id_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -736,7 +739,8 @@ def test_dhan_missing_delta_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -784,7 +788,8 @@ def test_dhan_zero_ltp_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
