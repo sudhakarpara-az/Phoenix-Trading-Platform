@@ -292,13 +292,52 @@ def test_invalid_suppression_window_is_rejected() -> None:
 
 def test_signal_fingerprint_equality() -> None:
     first = SignalFingerprint(
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
         level=KSLevelName.K5,
         event_type=LevelEventType.CROSSED_UP,
     )
 
     second = SignalFingerprint(
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
         level=KSLevelName.K5,
         event_type=LevelEventType.CROSSED_UP,
     )
 
     assert first == second
+
+
+def test_same_level_on_different_contract_is_not_duplicate() -> None:
+    guard = DuplicateSignalGuard(
+        suppression_seconds=5,
+    )
+
+    timestamp = datetime(
+        2026,
+        8,
+        7,
+        10,
+        0,
+    )
+
+    ce_event = make_event(
+        level=KSLevelName.K5,
+        timestamp=timestamp,
+    )
+
+    pe_event = LevelEvent(
+        trading_date=TRADING_DATE,
+        instrument_security_id="67890",
+        instrument_symbol="NIFTY-24750-PE",
+        level=KSLevelName.K5,
+        event_type=LevelEventType.CROSSED_UP,
+        level_price=24500.0,
+        market_price=24501.0,
+        timestamp=timestamp,
+    )
+
+    assert guard.allow(ce_event) is True
+    assert guard.allow(pe_event) is True

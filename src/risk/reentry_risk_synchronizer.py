@@ -53,6 +53,7 @@ class ReentrySyncPort(Protocol):
     def mark_position_open(
         self,
         *,
+        instrument_security_id: str,
         level: EntryLevel,
         position_id: FilledPositionId,
         changed_at: datetime,
@@ -62,6 +63,7 @@ class ReentrySyncPort(Protocol):
     def mark_position_closed(
         self,
         *,
+        instrument_security_id: str,
         level: EntryLevel,
         position_id: FilledPositionId,
         changed_at: datetime,
@@ -157,6 +159,9 @@ class ReentryRiskSynchronizer:
             )
 
         self._reentry_port.mark_position_open(
+            instrument_security_id=(
+                position.security_id
+            ),
             level=position.position.level,
             position_id=position.position_id,
             changed_at=synchronized_at,
@@ -220,6 +225,9 @@ class ReentryRiskSynchronizer:
             )
 
         self._reentry_port.mark_position_closed(
+            instrument_security_id=(
+                position.security_id
+            ),
             level=position.position.level,
             position_id=position.position_id,
             changed_at=synchronized_at,

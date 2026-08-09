@@ -593,7 +593,10 @@ def test_open_position_blocks_m04_reentry() -> None:
     assert runtime[
         "reentry_manager"
     ].can_enter(
-        EntryLevel.K5
+        instrument_security_id=(
+            position.security_id
+        ),
+        level=EntryLevel.K5,
     ) is False
 
 
@@ -828,7 +831,10 @@ def test_partial_target_fill_keeps_reentry_blocked() -> None:
     assert runtime[
         "reentry_manager"
     ].can_enter(
-        EntryLevel.K5
+        instrument_security_id=(
+            position.security_id
+        ),
+        level=EntryLevel.K5,
     ) is False
 
 
@@ -978,13 +984,19 @@ def test_final_fill_closes_position_and_releases_reentry() -> None:
     assert runtime[
         "reentry_manager"
     ].can_enter(
-        EntryLevel.K5
+        instrument_security_id=(
+            position.security_id
+        ),
+        level=EntryLevel.K5,
     ) is True
 
     assert runtime[
         "reentry_manager"
     ].is_reentry(
-        EntryLevel.K5
+        instrument_security_id=(
+            position.security_id
+        ),
+        level=EntryLevel.K5,
     ) is True
 
 

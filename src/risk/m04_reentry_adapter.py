@@ -1,8 +1,11 @@
-"""
+﻿"""
 Phoenix M04 Re-entry adapter.
 
 Bridges the generic M07 ReentrySyncPort to the existing
 M04 ReentryStateManager.
+
+Re-entry identity is:
+    instrument_security_id + EntryLevel
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ class M04ReentryAdapter:
     def mark_position_open(
         self,
         *,
+        instrument_security_id: str,
         level: EntryLevel,
         position_id: FilledPositionId,
         changed_at: datetime,
@@ -32,14 +36,18 @@ class M04ReentryAdapter:
         del position_id
 
         self._manager.mark_open(
-            level,
-            changed_at.date(),
-            changed_at,
+            instrument_security_id=(
+                instrument_security_id
+            ),
+            level=level,
+            trading_date=changed_at.date(),
+            opened_at=changed_at,
         )
 
     def mark_position_closed(
         self,
         *,
+        instrument_security_id: str,
         level: EntryLevel,
         position_id: FilledPositionId,
         changed_at: datetime,
@@ -47,6 +55,9 @@ class M04ReentryAdapter:
         del position_id
 
         self._manager.mark_closed(
-            level,
-            changed_at,
+            instrument_security_id=(
+                instrument_security_id
+            ),
+            level=level,
+            closed_at=changed_at,
         )

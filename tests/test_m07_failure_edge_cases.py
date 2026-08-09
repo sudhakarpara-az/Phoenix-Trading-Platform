@@ -162,6 +162,7 @@ class FakeReentryPort:
     def mark_position_open(
         self,
         *,
+        instrument_security_id,
         level,
         position_id,
         changed_at,
@@ -171,12 +172,14 @@ class FakeReentryPort:
                 level,
                 position_id,
                 changed_at,
+                instrument_security_id,
             )
         )
 
     def mark_position_closed(
         self,
         *,
+        instrument_security_id,
         level,
         position_id,
         changed_at,
@@ -186,6 +189,7 @@ class FakeReentryPort:
                 level,
                 position_id,
                 changed_at,
+                instrument_security_id,
             )
         )
 

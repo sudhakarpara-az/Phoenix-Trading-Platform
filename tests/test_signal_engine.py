@@ -360,6 +360,9 @@ def test_trade_close_allows_reentry() -> None:
     )
 
     engine.mark_trade_closed(
+        instrument_security_id=(
+            first.signal.instrument_security_id
+        ),
         level=EntryLevel.K5,
         closed_at=start
         + timedelta(minutes=15),
@@ -424,3 +427,69 @@ def test_signal_lock_can_be_released_if_execution_never_starts() -> None:
     )
 
     assert next_result.accepted is True
+
+def test_same_level_on_different_contracts_can_generate_signals_independently() -> None:
+    engine = make_engine(
+        suppression_seconds=30
+    )
+
+    timestamp = datetime(
+        2026,
+        8,
+        7,
+        10,
+        0,
+    )
+
+    call_event = LevelEvent(
+        trading_date=TRADING_DATE,
+        instrument_security_id="12345",
+        instrument_symbol="NIFTY-24550-CE",
+        level=KSLevelName.K5,
+        event_type=LevelEventType.CROSSED_UP,
+        level_price=100.0,
+        market_price=101.0,
+        timestamp=timestamp,
+    )
+
+    put_event = LevelEvent(
+        trading_date=TRADING_DATE,
+        instrument_security_id="67890",
+        instrument_symbol="NIFTY-24550-PE",
+        level=KSLevelName.K5,
+        event_type=LevelEventType.CROSSED_UP,
+        level_price=100.0,
+        market_price=101.0,
+        timestamp=timestamp,
+    )
+
+    first = engine.process(
+        event=call_event,
+        direction=SignalDirection.CALL,
+        context=make_context(),
+    )
+
+    assert first.accepted is True
+    assert first.signal is not None
+
+    engine.mark_trade_open(
+        first.signal
+    )
+
+    second = engine.process(
+        event=put_event,
+        direction=SignalDirection.PUT,
+        context=make_context(),
+    )
+
+    assert second.accepted is True
+    assert second.reason is SignalEngineReason.CREATED
+    assert second.signal is not None
+
+    assert (
+        second.signal.instrument_security_id
+        == "67890"
+    )
+
+    assert second.signal.level is EntryLevel.K5
+    assert second.signal.is_reentry is False

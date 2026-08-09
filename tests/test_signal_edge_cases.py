@@ -508,6 +508,9 @@ def test_closed_trade_allows_reentry() -> None:
     )
 
     engine.mark_trade_closed(
+        instrument_security_id=(
+            first.signal.instrument_security_id
+        ),
         level=EntryLevel.K5,
         closed_at=start
         + timedelta(minutes=10),

@@ -71,6 +71,7 @@ class FakeReentryPort:
     def mark_position_open(
         self,
         *,
+        instrument_security_id,
         level,
         position_id,
         changed_at,
@@ -80,12 +81,14 @@ class FakeReentryPort:
                 level,
                 position_id,
                 changed_at,
+                instrument_security_id,
             )
         )
 
     def mark_position_closed(
         self,
         *,
+        instrument_security_id,
         level,
         position_id,
         changed_at,
@@ -95,6 +98,7 @@ class FakeReentryPort:
                 level,
                 position_id,
                 changed_at,
+                instrument_security_id,
             )
         )
 
@@ -236,6 +240,11 @@ def test_open_position_syncs_to_reentry_port() -> None:
     assert (
         port.open_calls[0][0]
         is EntryLevel.K5
+    )
+
+    assert (
+        port.open_calls[0][3]
+        == position.security_id
     )
 
 
@@ -423,6 +432,11 @@ def test_closed_sync_preserves_level() -> None:
     assert (
         port.closed_calls[0][0]
         is EntryLevel.K7
+    )
+
+    assert (
+        port.closed_calls[0][3]
+        == position.security_id
     )
 
 
