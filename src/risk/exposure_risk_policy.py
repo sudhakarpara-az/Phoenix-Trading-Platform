@@ -160,6 +160,16 @@ class ExposureRiskPolicy:
         )
 
     @property
+    def registry(
+        self,
+    ) -> PositionRegistry:
+        """
+        Return the exact M07 registry used for exposure checks.
+        """
+
+        return self._registry
+
+    @property
     def config(
         self,
     ) -> ExposureRiskConfig:

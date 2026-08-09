@@ -678,3 +678,72 @@ def test_filled_status_requires_average_fill_price() -> None:
         )
         is OrderLifecycleState.OPEN
     )
+
+
+
+def test_live_execution_result_proves_broker_attempt() -> None:
+    service, _, _ = make_service()
+
+    _, result = execute_open_entry(
+        service
+    )
+
+    assert (
+        result.broker_submission_attempted
+        is True
+    )
+
+
+def test_pre_broker_live_block_is_not_broker_attempt() -> None:
+    broker = FakeEntryBroker()
+
+    service = ExecutionService(
+        pricing_policy=OrderPricingPolicy(),
+        quantity_policy=QuantityPolicy(),
+        eligibility_validator=(
+            OrderEligibilityValidator()
+        ),
+        state_machine=OrderStateMachine(),
+        broker_provider=broker,
+        allow_live_orders=False,
+    )
+
+    result = service.execute(
+        signal=make_signal(),
+        selected_option=make_option(),
+        quantity=65,
+        execution_mode=ExecutionMode.LIVE,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert result.execution_result is None
+
+    assert (
+        result.broker_submission_attempted
+        is False
+    )
+
+    assert broker.status_calls == 0
+
+
+def test_dry_run_result_is_not_live_broker_attempt() -> None:
+    service, broker, _ = make_service()
+
+    result = service.execute(
+        signal=make_signal(),
+        selected_option=make_option(),
+        quantity=65,
+        execution_mode=ExecutionMode.DRY_RUN,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert result.execution_result is not None
+
+    assert (
+        result.broker_submission_attempted
+        is False
+    )
+
+    assert broker.status_calls == 0

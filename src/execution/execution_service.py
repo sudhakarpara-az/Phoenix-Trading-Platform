@@ -94,6 +94,38 @@ class ExecutionServiceResult:
             and self.execution_result.success
         )
 
+    @property
+    def broker_submission_attempted(
+        self,
+    ) -> bool:
+        """
+        True only when a LIVE broker submission was attempted
+        and M06 returned an ExecutionResult.
+
+        This is intentionally different from submitted:
+
+            submitted
+                means the broker result reported success.
+
+            broker_submission_attempted
+                means Phoenix crossed the LIVE broker boundary,
+                regardless of success/status.
+
+        Pre-broker rejection therefore returns False.
+
+        If the broker call itself raises before M06 can return a
+        result, callers must inspect the M06 idempotency record.
+        SUBMITTED means the broker boundary may have been crossed
+        and the M04 signal lock must be retained.
+        """
+
+        return (
+            self.intent is not None
+            and self.intent.execution_mode
+            is ExecutionMode.LIVE
+            and self.execution_result is not None
+        )
+
 
 class ExecutionService:
     """
