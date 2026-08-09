@@ -26,6 +26,10 @@ class OrderLifecycleState(str, Enum):
     OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
 
+    RECONCILIATION_REQUIRED = (
+        "RECONCILIATION_REQUIRED"
+    )
+
     FILLED = "FILLED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
@@ -94,6 +98,7 @@ class OrderStateMachine:
             OrderLifecycleState.PENDING,
             OrderLifecycleState.OPEN,
             OrderLifecycleState.PARTIALLY_FILLED,
+            OrderLifecycleState.RECONCILIATION_REQUIRED,
             OrderLifecycleState.FILLED,
             OrderLifecycleState.REJECTED,
             OrderLifecycleState.CANCELLED,
@@ -103,6 +108,7 @@ class OrderStateMachine:
         OrderLifecycleState.PENDING: {
             OrderLifecycleState.OPEN,
             OrderLifecycleState.PARTIALLY_FILLED,
+            OrderLifecycleState.RECONCILIATION_REQUIRED,
             OrderLifecycleState.FILLED,
             OrderLifecycleState.REJECTED,
             OrderLifecycleState.CANCELLED,
@@ -111,6 +117,7 @@ class OrderStateMachine:
 
         OrderLifecycleState.OPEN: {
             OrderLifecycleState.PARTIALLY_FILLED,
+            OrderLifecycleState.RECONCILIATION_REQUIRED,
             OrderLifecycleState.FILLED,
             OrderLifecycleState.CANCELLED,
             OrderLifecycleState.REJECTED,
@@ -119,6 +126,17 @@ class OrderStateMachine:
 
         OrderLifecycleState.PARTIALLY_FILLED: {
             OrderLifecycleState.FILLED,
+            OrderLifecycleState.CANCELLED,
+            OrderLifecycleState.FAILED,
+            OrderLifecycleState.RECONCILIATION_REQUIRED,
+        },
+
+        OrderLifecycleState.RECONCILIATION_REQUIRED: {
+            OrderLifecycleState.PENDING,
+            OrderLifecycleState.OPEN,
+            OrderLifecycleState.PARTIALLY_FILLED,
+            OrderLifecycleState.FILLED,
+            OrderLifecycleState.REJECTED,
             OrderLifecycleState.CANCELLED,
             OrderLifecycleState.FAILED,
         },

@@ -618,7 +618,8 @@ class ExecutionService:
                 OrderLifecycleState.CANCELLED
             ),
             BrokerOrderStatus.UNKNOWN: (
-                OrderLifecycleState.FAILED
+                OrderLifecycleState
+                .RECONCILIATION_REQUIRED
             ),
         }
 
