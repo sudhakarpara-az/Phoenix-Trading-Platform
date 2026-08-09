@@ -80,6 +80,9 @@ class TradingSignal:
     level: EntryLevel
     direction: SignalDirection
 
+    instrument_security_id: str
+    instrument_symbol: str
+
     underlying_symbol: str
     underlying_security_id: str
     underlying_price: float
@@ -96,6 +99,16 @@ class TradingSignal:
     strategy_version: str = "KS_PHOENIX_V1"
 
     def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
+
         if not self.underlying_symbol.strip():
             raise ValueError(
                 "underlying_symbol cannot be empty"

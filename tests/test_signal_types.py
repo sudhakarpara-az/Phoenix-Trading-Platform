@@ -22,6 +22,8 @@ def make_signal() -> TradingSignal:
         trading_date=TRADING_DATE,
         level=EntryLevel.K5,
         direction=SignalDirection.CALL,
+        instrument_security_id="12345",
+        instrument_symbol="NIFTY-24550-CE",
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500.0,
@@ -72,6 +74,8 @@ def test_invalid_underlying_price_rejected() -> None:
             trading_date=TRADING_DATE,
             level=EntryLevel.K5,
             direction=SignalDirection.CALL,
+            instrument_security_id="12345",
+            instrument_symbol="NIFTY-24550-CE",
             underlying_symbol="NIFTY 50",
             underlying_security_id="13",
             underlying_price=0,
@@ -92,6 +96,8 @@ def test_invalid_level_price_rejected() -> None:
             trading_date=TRADING_DATE,
             level=EntryLevel.K5,
             direction=SignalDirection.PUT,
+            instrument_security_id="12345",
+            instrument_symbol="NIFTY-24550-PE",
             underlying_symbol="NIFTY 50",
             underlying_security_id="13",
             underlying_price=24500.0,
@@ -116,6 +122,8 @@ def test_reentry_flag() -> None:
         trading_date=TRADING_DATE,
         level=EntryLevel.K7,
         direction=SignalDirection.PUT,
+        instrument_security_id="12345",
+        instrument_symbol="NIFTY-24550-PE",
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24400.0,
@@ -133,3 +141,29 @@ def test_strategy_version_default() -> None:
     signal = make_signal()
 
     assert signal.strategy_version == "KS_PHOENIX_V1"
+
+
+def test_empty_instrument_security_id_rejected() -> None:
+    from dataclasses import replace
+
+    with pytest.raises(
+        ValueError,
+        match="instrument_security_id cannot be empty",
+    ):
+        replace(
+            make_signal(),
+            instrument_security_id=" ",
+        )
+
+
+def test_empty_instrument_symbol_rejected() -> None:
+    from dataclasses import replace
+
+    with pytest.raises(
+        ValueError,
+        match="instrument_symbol cannot be empty",
+    ):
+        replace(
+            make_signal(),
+            instrument_symbol=" ",
+        )

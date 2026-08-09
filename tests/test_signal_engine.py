@@ -117,6 +117,46 @@ def test_valid_event_creates_signal() -> None:
     assert result.signal.direction is SignalDirection.CALL
 
 
+def test_signal_preserves_strategy_instrument_identity() -> None:
+    engine = make_engine()
+
+    event = LevelEvent(
+        trading_date=TRADING_DATE,
+        instrument_security_id="54321",
+        instrument_symbol="NIFTY-24550-PE",
+        level=KSLevelName.K5,
+        event_type=LevelEventType.CROSSED_DOWN,
+        level_price=24500.0,
+        market_price=24499.0,
+        timestamp=datetime(
+            2026,
+            8,
+            7,
+            10,
+            0,
+        ),
+    )
+
+    result = engine.process(
+        event=event,
+        direction=SignalDirection.PUT,
+        context=make_context(),
+    )
+
+    assert result.accepted is True
+    assert result.signal is not None
+
+    assert (
+        result.signal.instrument_security_id
+        == event.instrument_security_id
+    )
+
+    assert (
+        result.signal.instrument_symbol
+        == event.instrument_symbol
+    )
+
+
 def test_put_direction_is_preserved() -> None:
     engine = make_engine()
 

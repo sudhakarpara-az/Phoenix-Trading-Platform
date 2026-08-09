@@ -142,6 +142,8 @@ def make_signal(
         trading_date=TRADING_DATE,
         level=level,
         direction=direction,
+        instrument_security_id="12345",
+        instrument_symbol="NIFTY-TEST-OPTION",
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500.0,
