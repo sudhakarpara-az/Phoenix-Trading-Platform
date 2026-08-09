@@ -1,23 +1,33 @@
 """
-Phoenix M07 underlying-to-option target mapping boundary.
+Phoenix M07 option-contract KS target mapping boundary.
 
-This module prevents strategy underlying prices from being
-mistaken for option premium prices.
+The strategy instrument is the selected option contract itself.
+
+Target ownership:
+
+    FilledPosition
+        +
+    same-contract KSLevels
+        ->
+    mapped option KS target
+        ->
+    TargetBookingPolicy
+        ->
+    TargetDefinition
+
+Current Phoenix mappings are owned by KSLevels:
+
+    K5 -> K3
+    K6 -> K5
+    K7 -> K6
 
 Important:
 
-    NIFTY KS target level
-        !=
-    option premium target
-
-The mapper does NOT calculate theoretical option price from
-underlying movement.
-
-Instead, when the underlying target condition is reached,
-Phoenix captures the current observed option premium and
-records that as the mapped option target reference.
-
-No broker execution belongs here.
+    - NIFTY spot is not used to derive the option target.
+    - Current option LTP is not sampled to invent a target.
+    - The KS target must belong to the same selected contract.
+    - Target booking uses the actual broker fill price.
+    - No broker execution belongs in this module.
 """
 
 from __future__ import annotations
@@ -28,13 +38,29 @@ from enum import Enum
 from math import isfinite
 
 from src.execution.position_exit_types import (
+    FilledPosition,
     FilledPositionId,
+)
+from src.execution.target_booking_policy import (
+    TargetBookingPolicy,
+)
+from src.risk.risk_types import (
+    TargetDefinition,
+)
+from src.strategy.strategy_types import (
+    EntryLevel,
+    KSLevelName,
+    KSLevels,
 )
 
 
 class OptionTargetMappingStatus(str, Enum):
     """
-    Outcome of one target mapping attempt.
+    Outcome of an option target mapping operation.
+
+    UNDERLYING_NOT_REACHED and OPTION_PRICE_NOT_AVAILABLE are
+    retained only as legacy enum values for import compatibility.
+    The corrected option-contract mapper never returns them.
     """
 
     MAPPED = "MAPPED"
@@ -50,38 +76,29 @@ class OptionTargetMappingStatus(str, Enum):
 
 class UnderlyingTargetDirection(str, Enum):
     """
-    Direction used to determine whether the underlying
-    target has been reached.
+    Legacy target-direction type retained for import compatibility.
 
-    ABOVE_OR_EQUAL:
-        target condition:
-            current_underlying >= target_underlying
-
-    BELOW_OR_EQUAL:
-        target condition:
-            current_underlying <= target_underlying
+    The corrected OptionTargetMapper does not consume underlying
+    target directions because selected-option KS levels are already
+    expressed directly in option-premium prices.
     """
 
     ABOVE_OR_EQUAL = "ABOVE_OR_EQUAL"
-
     BELOW_OR_EQUAL = "BELOW_OR_EQUAL"
 
 
 @dataclass(frozen=True, slots=True)
 class UnderlyingTarget:
     """
-    Strategy-domain target.
+    Legacy underlying-target value object.
 
-    target_price is always an UNDERLYING NIFTY price.
+    Retained only for compatibility with older imports.
 
-    It must never be passed directly into M06 option-premium
-    target calculation.
+    It is not accepted by the corrected OptionTargetMapper.
     """
 
     target_price: float
-
     direction: UnderlyingTargetDirection
-
     level_name: str
 
     def __post_init__(self) -> None:
@@ -107,182 +124,196 @@ class UnderlyingTarget:
 @dataclass(frozen=True, slots=True)
 class OptionTargetMapping:
     """
-    Typed boundary result connecting the strategy domain
-    to the option-premium domain.
-
-    underlying_target_price:
-        NIFTY target level.
-
-    underlying_price_at_mapping:
-        Actual NIFTY price when target condition was evaluated.
-
-    option_price_at_mapping:
-        Observed option LTP at the same mapping event.
+    Immutable same-contract KS target mapping.
 
     mapped_option_target_price:
-        Option premium that downstream M06 target logic may use.
+        The selected option contract's own mapped KS target price.
+
+    target_definition:
+        Runtime M07 target after TargetBookingPolicy applies the
+        +30 / three-point-buffer rule from actual broker fill.
     """
 
     position_id: FilledPositionId
 
-    underlying_target_price: float
+    instrument_security_id: str
+    instrument_symbol: str
 
-    underlying_price_at_mapping: float
-
-    option_price_at_mapping: float
+    entry_level: EntryLevel
+    target_level: KSLevelName
 
     mapped_option_target_price: float
 
+    target_definition: TargetDefinition
+
     mapped_at: datetime
 
-    level_name: str
-
     def __post_init__(self) -> None:
-        values = {
-            "underlying_target_price": (
-                self.underlying_target_price
-            ),
-            "underlying_price_at_mapping": (
-                self.underlying_price_at_mapping
-            ),
-            "option_price_at_mapping": (
-                self.option_price_at_mapping
-            ),
-            "mapped_option_target_price": (
-                self.mapped_option_target_price
-            ),
-        }
-
-        for name, value in values.items():
-            if not isfinite(value):
-                raise ValueError(
-                    f"{name} must be finite"
-                )
-
-            if value <= 0:
-                raise ValueError(
-                    f"{name} must be greater than zero"
-                )
-
-        if not self.level_name.strip():
+        if not self.instrument_security_id.strip():
             raise ValueError(
-                "level_name cannot be empty"
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
+
+        if not isfinite(
+            self.mapped_option_target_price
+        ):
+            raise ValueError(
+                "mapped_option_target_price must be finite"
+            )
+
+        if self.mapped_option_target_price <= 0:
+            raise ValueError(
+                "mapped_option_target_price must be "
+                "greater than zero"
             )
 
         if (
-            self.mapped_option_target_price
-            != self.option_price_at_mapping
+            self.target_definition
+            .mapped_target_price
+            != self.mapped_option_target_price
         ):
             raise ValueError(
-                "mapped_option_target_price must equal "
-                "observed option price at mapping"
+                "target definition mapped price must match "
+                "mapped option target price"
             )
 
 
 @dataclass(frozen=True, slots=True)
 class OptionTargetMappingResult:
+    """
+    Successful same-contract option target mapping result.
+
+    Invalid ownership or invalid target arithmetic fails closed by
+    raising before a result is produced.
+    """
+
     status: OptionTargetMappingStatus
-
-    mapping: OptionTargetMapping | None
-
-    underlying_price: float
-
-    option_ltp: float | None
-
-    evaluated_at: datetime
+    mapping: OptionTargetMapping
 
     @property
     def mapped(self) -> bool:
         return (
             self.status
             is OptionTargetMappingStatus.MAPPED
-            and self.mapping is not None
         )
 
 
 class OptionTargetMapper:
     """
-    Explicit boundary between:
+    Maps one filled option position to its own KS target.
 
-        strategy underlying target
-            and
-        option premium target.
+    The supplied KSLevels must belong to the exact same:
+        - trading date
+        - security ID
+        - symbol
 
-    The mapper does not infer theoretical option value.
+    Target price resolution is:
 
-    It only maps when:
-        1. underlying target condition is reached
-        2. a valid current option LTP is available
+        position.level
+            ->
+        levels.target_for(...)
+            ->
+        levels.get(...)
+            ->
+        TargetBookingPolicy
     """
+
+    def __init__(
+        self,
+        target_booking_policy: TargetBookingPolicy | None = None,
+    ) -> None:
+        self._target_booking_policy = (
+            target_booking_policy
+            or TargetBookingPolicy()
+        )
+
+    @property
+    def target_booking_policy(
+        self,
+    ) -> TargetBookingPolicy:
+        return self._target_booking_policy
 
     def map_target(
         self,
         *,
-        position_id: FilledPositionId,
-        target: UnderlyingTarget,
-        current_underlying_price: float,
-        current_option_ltp: float | None,
-        evaluated_at: datetime,
+        position: FilledPosition,
+        levels: KSLevels,
+        mapped_at: datetime,
     ) -> OptionTargetMappingResult:
-        self._validate_underlying_price(
-            current_underlying_price
+        """
+        Build the runtime target for one filled option position.
+
+        No current underlying price or current option LTP is needed.
+        The target is already present in the selected contract's
+        finalized KSLevels.
+        """
+
+        self._validate_ownership(
+            position=position,
+            levels=levels,
         )
 
-        reached = self._is_target_reached(
-            current_price=(
-                current_underlying_price
+        if mapped_at < position.filled_at:
+            raise ValueError(
+                "mapped_at cannot be before position filled_at"
+            )
+
+        target_level = levels.target_for(
+            position.level
+        )
+
+        mapped_target_price = levels.get(
+            target_level
+        )
+
+        target_plan = (
+            self._target_booking_policy.calculate(
+                entry_price=position.entry_price,
+                mapped_target_price=(
+                    mapped_target_price
+                ),
+            )
+        )
+
+        target_definition = TargetDefinition(
+            executable_price=(
+                target_plan
+                .executable_target_price
             ),
-            target=target,
-        )
-
-        if not reached:
-            return OptionTargetMappingResult(
-                status=(
-                    OptionTargetMappingStatus
-                    .UNDERLYING_NOT_REACHED
-                ),
-                mapping=None,
-                underlying_price=(
-                    current_underlying_price
-                ),
-                option_ltp=current_option_ltp,
-                evaluated_at=evaluated_at,
-            )
-
-        if current_option_ltp is None:
-            return OptionTargetMappingResult(
-                status=(
-                    OptionTargetMappingStatus
-                    .OPTION_PRICE_NOT_AVAILABLE
-                ),
-                mapping=None,
-                underlying_price=(
-                    current_underlying_price
-                ),
-                option_ltp=None,
-                evaluated_at=evaluated_at,
-            )
-
-        self._validate_option_price(
-            current_option_ltp
+            mapped_target_price=(
+                target_plan
+                .mapped_target_price
+            ),
+            booking_zone_start=(
+                target_plan
+                .booking_zone_start
+            ),
+            booking_zone_end=(
+                target_plan
+                .booking_zone_end
+            ),
         )
 
         mapping = OptionTargetMapping(
-            position_id=position_id,
-            underlying_target_price=(
-                target.target_price
+            position_id=position.position_id,
+            instrument_security_id=(
+                position.security_id
             ),
-            underlying_price_at_mapping=(
-                current_underlying_price
-            ),
-            option_price_at_mapping=(
-                current_option_ltp
-            ),
+            instrument_symbol=position.symbol,
+            entry_level=position.level,
+            target_level=target_level,
             mapped_option_target_price=(
-                current_option_ltp
+                mapped_target_price
             ),
-            mapped_at=evaluated_at,
-            level_name=target.level_name,
+            target_definition=(
+                target_definition
+            ),
+            mapped_at=mapped_at,
         )
 
         return OptionTargetMappingResult(
@@ -290,69 +321,37 @@ class OptionTargetMapper:
                 OptionTargetMappingStatus.MAPPED
             ),
             mapping=mapping,
-            underlying_price=(
-                current_underlying_price
-            ),
-            option_ltp=current_option_ltp,
-            evaluated_at=evaluated_at,
         )
 
     @staticmethod
-    def _is_target_reached(
+    def _validate_ownership(
         *,
-        current_price: float,
-        target: UnderlyingTarget,
-    ) -> bool:
-        if (
-            target.direction
-            is UnderlyingTargetDirection
-            .ABOVE_OR_EQUAL
-        ):
-            return (
-                current_price
-                >= target.target_price
-            )
-
-        if (
-            target.direction
-            is UnderlyingTargetDirection
-            .BELOW_OR_EQUAL
-        ):
-            return (
-                current_price
-                <= target.target_price
-            )
-
-        raise ValueError(
-            "unsupported underlying target direction"
-        )
-
-    @staticmethod
-    def _validate_underlying_price(
-        value: float,
+        position: FilledPosition,
+        levels: KSLevels,
     ) -> None:
-        if not isfinite(value):
+        if (
+            levels.instrument_security_id
+            != position.security_id
+        ):
             raise ValueError(
-                "current underlying price must be finite"
+                "KS levels security ID does not match "
+                "filled position security ID"
             )
 
-        if value <= 0:
+        if (
+            levels.instrument_symbol
+            != position.symbol
+        ):
             raise ValueError(
-                "current underlying price must be "
-                "greater than zero"
+                "KS levels symbol does not match "
+                "filled position symbol"
             )
 
-    @staticmethod
-    def _validate_option_price(
-        value: float,
-    ) -> None:
-        if not isfinite(value):
+        if (
+            levels.trading_date
+            != position.filled_at.date()
+        ):
             raise ValueError(
-                "current option LTP must be finite"
-            )
-
-        if value <= 0:
-            raise ValueError(
-                "current option LTP must be "
-                "greater than zero"
+                "KS levels trading date does not match "
+                "filled position trading date"
             )
