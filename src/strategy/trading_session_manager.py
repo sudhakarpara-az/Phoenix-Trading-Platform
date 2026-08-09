@@ -28,7 +28,7 @@ class TradingSessionConfig:
 
     market_open: time = time(9, 15)
     reference_candle_end: time = time(9, 16)
-    monitoring_start: time = time(9, 20)
+    monitoring_start: time = time(9, 21)
     force_exit: time = time(15, 15)
 
     def __post_init__(self) -> None:

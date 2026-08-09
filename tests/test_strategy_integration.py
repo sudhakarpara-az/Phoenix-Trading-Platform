@@ -105,8 +105,8 @@ def build_reference_candle(
     Build the completed 09:15-09:16 reference candle.
 
     The reference candle is finalized at 09:16. The session is
-    then advanced separately to the existing monitoring_start
-    boundary so downstream integration behavior remains explicit.
+    then advanced separately to the completed-09:20-candle
+    monitoring boundary at 09:21.
     """
 
     assert (
@@ -210,7 +210,7 @@ def build_reference_candle(
                 8,
                 7,
                 9,
-                20,
+                21,
                 0,
             )
         )

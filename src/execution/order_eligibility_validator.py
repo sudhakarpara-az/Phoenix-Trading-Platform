@@ -78,17 +78,18 @@ class OrderEligibilityValidator:
 
     Current Phoenix execution window:
 
-        start      : 09:20
+        start      : 09:21
         force exit : 15:15
 
-    New BUY entries are permitted from 09:20 inclusive
+    New BUY entries are permitted from 09:21 inclusive,
+    after the completed 09:20 one-minute candle,
     until 15:15 exclusive.
     """
 
     def __init__(
         self,
         quantity_policy: QuantityPolicy | None = None,
-        start_time: time = time(9, 20),
+        start_time: time = time(9, 21),
         force_exit_time: time = time(15, 15),
     ) -> None:
         if start_time >= force_exit_time:

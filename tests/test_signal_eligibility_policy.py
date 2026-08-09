@@ -118,14 +118,14 @@ def test_k3_is_not_entry_eligible() -> None:
     )
 
 
-def test_event_before_920_is_rejected() -> None:
+def test_event_during_920_candle_is_rejected() -> None:
     policy = SignalEligibilityPolicy()
 
     decision = policy.evaluate(
         make_event(
             KSLevelName.K5,
             hour=9,
-            minute=19,
+            minute=20,
         ),
         make_context(),
     )
@@ -138,14 +138,14 @@ def test_event_before_920_is_rejected() -> None:
     )
 
 
-def test_event_at_920_is_allowed() -> None:
+def test_event_at_921_is_allowed() -> None:
     policy = SignalEligibilityPolicy()
 
     decision = policy.evaluate(
         make_event(
             KSLevelName.K5,
             hour=9,
-            minute=20,
+            minute=21,
         ),
         make_context(),
     )

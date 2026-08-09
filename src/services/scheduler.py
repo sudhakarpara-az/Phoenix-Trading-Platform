@@ -18,7 +18,7 @@ M10 coordinates those existing boundaries across one trading day.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 from math import isfinite
 from threading import RLock
@@ -1226,6 +1226,205 @@ class TradingDayOptionSelectionCoordinator:
             )
 
 
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class MonitoringWindowSchedule:
+    """
+    M10 timing boundary for entry monitoring.
+
+    Phoenix waits for the entire 09:20 one-minute candle to
+    complete. Entry monitoring therefore begins at 09:21.
+
+    The 09:20 candle is a timing gate only. Its OHLC does not
+    participate in KS calculations.
+    """
+
+    monitoring_candle_start: time = time(9, 20)
+    monitoring_start: time = time(9, 21)
+
+    def __post_init__(self) -> None:
+        if type(self.monitoring_candle_start) is not time:
+            raise TypeError(
+                "monitoring_candle_start must be a time"
+            )
+
+        if type(self.monitoring_start) is not time:
+            raise TypeError(
+                "monitoring_start must be a time"
+            )
+
+        candle_start = datetime.combine(
+            date.min,
+            self.monitoring_candle_start,
+        )
+
+        monitoring_start = datetime.combine(
+            date.min,
+            self.monitoring_start,
+        )
+
+        if (
+            monitoring_start - candle_start
+            != timedelta(minutes=1)
+        ):
+            raise ValueError(
+                "monitoring_start must be exactly one minute "
+                "after monitoring_candle_start"
+            )
+
+
+class TradingDayMonitoringError(RuntimeError):
+    """
+    Raised when monitoring activation violates the M10 timing
+    or lifecycle contract.
+    """
+
+
+class TradingDayMonitoringCoordinator:
+    """
+    Coordinates completed-09:20-candle monitoring activation.
+
+    State ownership:
+
+        WAITING_FOR_MONITORING
+            ->
+        MONITORING
+
+    Monitoring cannot begin during the 09:20 candle. At exactly
+    09:21 the candle is complete and monitoring may begin.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        schedule: MonitoringWindowSchedule | None = None,
+    ) -> None:
+        self._scheduler = scheduler
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else MonitoringWindowSchedule()
+        )
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def schedule(self) -> MonitoringWindowSchedule:
+        return self._schedule
+
+    def is_monitoring_candle_open(
+        self,
+        now: datetime,
+    ) -> bool:
+        self._validate_datetime(
+            now
+        )
+
+        self._validate_trading_date(
+            now
+        )
+
+        current_time = now.time()
+
+        return (
+            self._schedule.monitoring_candle_start
+            <= current_time
+            < self._schedule.monitoring_start
+        )
+
+    def is_monitoring_ready(
+        self,
+        now: datetime,
+    ) -> bool:
+        self._validate_datetime(
+            now
+        )
+
+        self._validate_trading_date(
+            now
+        )
+
+        return (
+            now.time()
+            >= self._schedule.monitoring_start
+        )
+
+    def activate_monitoring(
+        self,
+        *,
+        activated_at: datetime,
+    ) -> TradingDaySnapshot:
+        """
+        Enter MONITORING only after the 09:20 candle has closed.
+
+        Repeated activation after a successful transition is
+        idempotent.
+        """
+
+        self._validate_datetime(
+            activated_at
+        )
+
+        self._validate_trading_date(
+            activated_at
+        )
+
+        if (
+            activated_at.time()
+            < self._schedule.monitoring_start
+        ):
+            raise TradingDayMonitoringError(
+                "monitoring cannot begin before the 09:20 "
+                "one-minute candle has completed"
+            )
+
+        state = self._scheduler.state
+
+        if state is TradingDayState.MONITORING:
+            return self._scheduler.snapshot
+
+        if (
+            state
+            is not TradingDayState.WAITING_FOR_MONITORING
+        ):
+            raise TradingDayMonitoringError(
+                "monitoring activation requires "
+                "WAITING_FOR_MONITORING state"
+            )
+
+        return self._scheduler.transition(
+            target_state=TradingDayState.MONITORING,
+            transitioned_at=activated_at,
+        )
+
+    def _validate_trading_date(
+        self,
+        now: datetime,
+    ) -> None:
+        if (
+            now.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayMonitoringError(
+                "monitoring timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "monitoring timestamp must be a datetime"
+            )
+
+
 class HistoricalCandlePort(Protocol):
     """
     Narrow M10 boundary for completed historical one-minute
@@ -2026,6 +2225,7 @@ class TradingDayStartupCoordinator:
 
 __all__ = [
     "HistoricalCandlePort",
+    "MonitoringWindowSchedule",
     "MorningOptionSelectionPort",
     "ReferenceWindowSchedule",
     "StartupRecoveryPort",
@@ -2036,6 +2236,8 @@ __all__ = [
     "TradingDayLevelPreparationCoordinator",
     "TradingDayLevelPreparationError",
     "TradingDayLevelPreparationResult",
+    "TradingDayMonitoringCoordinator",
+    "TradingDayMonitoringError",
     "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
