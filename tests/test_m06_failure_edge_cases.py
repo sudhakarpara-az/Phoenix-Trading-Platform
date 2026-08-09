@@ -8,6 +8,7 @@ from src.execution.broker_execution_provider import (
     BrokerOrderSnapshot,
 )
 from src.execution.execution_service import (
+    EntrySubmissionUncertainError,
     ExecutionService,
 )
 from src.execution.execution_types import (
@@ -541,9 +542,9 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
     )
 
     with pytest.raises(
-        RuntimeError,
+        EntrySubmissionUncertainError,
         match="simulated network timeout",
-    ):
+    ) as exc_info:
         service.execute(
             signal=signal,
             selected_option=make_option(),
@@ -552,6 +553,36 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
             requested_at=NOW,
             context=OrderEligibilityContext(),
         )
+
+    uncertain = exc_info.value
+
+    assert (
+        uncertain.intent.signal.signal_id
+        == signal.signal_id
+    )
+
+    assert (
+        uncertain.intent.selected_option.security_id
+        == make_option().security_id
+    )
+
+    assert isinstance(
+        uncertain.cause,
+        RuntimeError,
+    )
+
+    assert (
+        str(uncertain.cause)
+        == "simulated network timeout"
+    )
+
+    assert (
+        state_machine.get_state(
+            uncertain.intent.intent_id
+        )
+        is OrderLifecycleState
+        .RECONCILIATION_REQUIRED
+    )
 
     key = IdempotencyKey.from_signal_id(
         signal.signal_id
@@ -562,6 +593,11 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
     )
 
     assert record is not None
+
+    assert (
+        record.intent_id
+        == uncertain.intent.intent_id.value
+    )
 
     assert (
         record.state

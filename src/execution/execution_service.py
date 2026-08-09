@@ -69,6 +69,34 @@ from src.signals.signal_types import (
 )
 
 
+class EntrySubmissionUncertainError(RuntimeError):
+    """
+    LIVE entry submission crossed the broker boundary but Phoenix
+    did not receive a normalized ExecutionResult.
+
+    The exact immutable OrderIntent is retained so application
+    orchestration can preserve the pending/reconciliation context
+    without reconstructing execution identity.
+
+    M06 idempotency remains SUBMITTED until explicit broker
+    reconciliation proves a safe terminal outcome.
+    """
+
+    def __init__(
+        self,
+        *,
+        intent: OrderIntent,
+        cause: Exception,
+    ) -> None:
+        self.intent = intent
+        self.cause = cause
+
+        super().__init__(
+            str(cause)
+            or "LIVE entry broker submission outcome is uncertain"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionServiceResult:
     """
@@ -711,11 +739,37 @@ class ExecutionService:
             changed_at=requested_at,
         )
 
-        execution_result = (
-            self._broker_provider.submit_order(
-                intent
+        try:
+            execution_result = (
+                self._broker_provider.submit_order(
+                    intent
+                )
             )
-        )
+
+        except Exception as exc:
+            # The broker may have accepted the order before the
+            # transport/provider failure became visible locally.
+            #
+            # Never release the SUBMITTED idempotency reservation.
+            # Preserve the exact intent for T14 recovery and make
+            # the M06 lifecycle ambiguity explicit.
+            self._state_machine.transition(
+                intent.intent_id,
+                (
+                    OrderLifecycleState
+                    .RECONCILIATION_REQUIRED
+                ),
+                requested_at,
+                message=(
+                    str(exc)
+                    or "LIVE broker submission outcome uncertain"
+                ),
+            )
+
+            raise EntrySubmissionUncertainError(
+                intent=intent,
+                cause=exc,
+            ) from exc
 
         self._apply_execution_result(
             intent=intent,
