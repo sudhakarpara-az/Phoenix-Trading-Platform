@@ -48,6 +48,9 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_engine(
     suppression_seconds: float = 5.0,
@@ -104,6 +107,10 @@ def make_event(
 
     return LevelEvent(
         trading_date=trading_date,
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=INSTRUMENT_SYMBOL,
         level=level,
         event_type=event_type,
         level_price=level_price,

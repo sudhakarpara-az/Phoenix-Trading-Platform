@@ -28,7 +28,7 @@ class BaseLevelCalculator:
         E
         T
 
-    using the completed 09:15-09:20 NIFTY reference candle.
+    using the completed strategy-instrument reference candle.
     """
 
     E_FACTOR = 3.2
@@ -81,6 +81,10 @@ class BaseLevelCalculator:
 
         return KSBaseLevels(
             trading_date=candle.trading_date,
+            instrument_security_id=(
+                candle.instrument_security_id
+            ),
+            instrument_symbol=candle.instrument_symbol,
             n1=n1,
             n2=n2,
             c1=c1,

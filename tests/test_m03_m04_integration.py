@@ -564,6 +564,12 @@ def test_duplicate_k5_event_does_not_create_second_signal() -> None:
     # within the suppression window.
     duplicate_event = type(first_event)(
         trading_date=first_event.trading_date,
+        instrument_security_id=(
+            first_event.instrument_security_id
+        ),
+        instrument_symbol=(
+            first_event.instrument_symbol
+        ),
         level=first_event.level,
         event_type=first_event.event_type,
         level_price=first_event.level_price,
@@ -632,6 +638,12 @@ def test_active_k5_lock_blocks_new_signal() -> None:
 
     later_event = type(event)(
         trading_date=event.trading_date,
+        instrument_security_id=(
+            event.instrument_security_id
+        ),
+        instrument_symbol=(
+            event.instrument_symbol
+        ),
         level=event.level,
         event_type=event.event_type,
         level_price=event.level_price,
@@ -714,6 +726,12 @@ def test_closed_k5_trade_allows_reentry_signal() -> None:
 
     reentry_event = type(first_event)(
         trading_date=TRADING_DATE,
+        instrument_security_id=(
+            first_event.instrument_security_id
+        ),
+        instrument_symbol=(
+            first_event.instrument_symbol
+        ),
         level=KSLevelName.K5,
         event_type=LevelEventType.CROSSED_UP,
         level_price=levels.k5,

@@ -1,5 +1,5 @@
 """
-Build the daily 09:15–09:20 NIFTY reference candle
+Build the daily strategy-instrument reference candle
 for the KS Phoenix strategy.
 """
 
@@ -14,30 +14,41 @@ from src.strategy.strategy_types import ReferenceCandle
 
 class ReferenceCandleBuilder:
     """
-    Builds one immutable 09:15–09:20 reference candle
-    from normalized NIFTY MarketTick objects.
+    Builds one immutable reference candle from normalized
+    MarketTick objects for one configured strategy instrument.
 
     Rules:
-        - Accept only the configured NIFTY security ID.
-        - Accept ticks from 09:15:00 inclusive.
-        - Accept ticks before 09:20:00.
+        - Accept only the configured instrument security ID.
+        - Accept ticks from window_start inclusive.
+        - Accept ticks before window_end.
         - Ignore ticks outside the reference window.
         - Ignore ticks from another trading date.
         - Ignore out-of-order ticks older than the last accepted tick.
-        - Finalize only at or after 09:20.
+        - Finalize only at or after window_end.
         - Once finalized, the candle cannot be changed.
+
+    The current default time window remains 09:15-09:20 during
+    PRE-M10-C01. The finalized 09:15-09:16 option-candle window
+    will be applied separately in PRE-M10-C02.
     """
 
     def __init__(
         self,
         security_id: str = "13",
+        instrument_symbol: str = "NIFTY 50",
         window_start: time = time(9, 15),
         window_end: time = time(9, 20),
     ) -> None:
         security_id = security_id.strip()
+        instrument_symbol = instrument_symbol.strip()
 
         if not security_id:
             raise ValueError("security_id cannot be empty")
+
+        if not instrument_symbol:
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
 
         if window_end <= window_start:
             raise ValueError(
@@ -45,6 +56,8 @@ class ReferenceCandleBuilder:
             )
 
         self._security_id = security_id
+        self._instrument_symbol = instrument_symbol
+
         self._window_start = window_start
         self._window_end = window_end
 
@@ -69,6 +82,10 @@ class ReferenceCandleBuilder:
         return self._security_id
 
     @property
+    def instrument_symbol(self) -> str:
+        return self._instrument_symbol
+
+    @property
     def trading_date(self) -> date | None:
         with self._lock:
             return self._trading_date
@@ -88,7 +105,7 @@ class ReferenceCandleBuilder:
         tick: MarketTick,
     ) -> bool:
         """
-        Process one NIFTY market tick.
+        Process one market tick for the configured instrument.
 
         Returns True when the tick was accepted into the candle.
         Returns False when it was ignored.
@@ -117,8 +134,6 @@ class ReferenceCandleBuilder:
             if tick_date != self._trading_date:
                 return False
 
-            # Protect OHLC construction against delayed/out-of-order
-            # WebSocket messages.
             if (
                 self._last_tick_at is not None
                 and tick.timestamp < self._last_tick_at
@@ -159,7 +174,7 @@ class ReferenceCandleBuilder:
         """
         Finalize and return the completed reference candle.
 
-        Finalization is allowed only at or after 09:20.
+        Finalization is allowed only at or after window_end.
         """
 
         with self._lock:
@@ -203,6 +218,8 @@ class ReferenceCandleBuilder:
 
             self._finalized = ReferenceCandle(
                 trading_date=self._trading_date,
+                instrument_security_id=self._security_id,
+                instrument_symbol=self._instrument_symbol,
                 start_time=start_time,
                 end_time=end_time,
                 open=self._open,
@@ -221,9 +238,10 @@ class ReferenceCandleBuilder:
 
     def reset(self) -> None:
         """
-        Clear all state.
+        Clear all daily candle state.
 
-        Used when a new trading session begins.
+        The configured instrument identity and time window remain
+        unchanged so the builder can be reused for a new session.
         """
 
         with self._lock:

@@ -75,6 +75,9 @@ class ReferenceCandle:
 
     trading_date: date
 
+    instrument_security_id: str
+    instrument_symbol: str
+
     start_time: datetime
     end_time: datetime
 
@@ -84,6 +87,15 @@ class ReferenceCandle:
     close: float
 
     def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
         prices = {
             "open": self.open,
             "high": self.high,
@@ -156,6 +168,9 @@ class KSBaseLevels:
 
     trading_date: date
 
+    instrument_security_id: str
+    instrument_symbol: str
+
     n1: float
     n2: float
     c1: float
@@ -166,6 +181,15 @@ class KSBaseLevels:
     calculated_at: datetime
 
     def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
         values = {
             "n1": self.n1,
             "n2": self.n2,
@@ -192,6 +216,9 @@ class KSLevels:
 
     trading_date: date
 
+    instrument_security_id: str
+    instrument_symbol: str
+
     high_915: float
     low_915: float
     close_915: float
@@ -215,6 +242,16 @@ class KSLevels:
     formula_version: str = "KS_PHOENIX_V1"
 
     def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
+
         numeric_values = {
             "high_915": self.high_915,
             "low_915": self.low_915,
@@ -310,6 +347,9 @@ class LevelEvent:
 
     trading_date: date
 
+    instrument_security_id: str
+    instrument_symbol: str
+
     level: KSLevelName
     event_type: LevelEventType
 
@@ -319,6 +359,15 @@ class LevelEvent:
     timestamp: datetime
 
     def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+        if not self.instrument_symbol.strip():
+            raise ValueError(
+                "instrument_symbol cannot be empty"
+            )
         if self.level_price <= 0:
             raise ValueError(
                 "level_price must be greater than zero"

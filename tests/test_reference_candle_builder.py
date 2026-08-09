@@ -11,17 +11,29 @@ from src.strategy.reference_candle_builder import (
 )
 
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
+
+def make_builder() -> ReferenceCandleBuilder:
+    return ReferenceCandleBuilder(
+        security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
+    )
+
+
 def tick(
     price: float,
     hour: int,
     minute: int,
     second: int = 0,
-    security_id: str = "13",
+    security_id: str = INSTRUMENT_SECURITY_ID,
+    symbol: str = INSTRUMENT_SYMBOL,
     day: int = 7,
 ) -> MarketTick:
     return MarketTick(
-        exchange=Exchange.IDX,
-        symbol="NIFTY 50",
+        exchange=Exchange.NSE,
+        symbol=symbol,
         security_id=security_id,
         ltp=price,
         volume=0,
@@ -36,11 +48,40 @@ def tick(
     )
 
 
+def test_builder_preserves_instrument_configuration() -> None:
+    builder = make_builder()
+
+    assert builder.security_id == INSTRUMENT_SECURITY_ID
+    assert builder.instrument_symbol == INSTRUMENT_SYMBOL
+
+
+def test_empty_security_id_is_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match="security_id cannot be empty",
+    ):
+        ReferenceCandleBuilder(
+            security_id=" ",
+            instrument_symbol=INSTRUMENT_SYMBOL,
+        )
+
+
+def test_empty_instrument_symbol_is_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match="instrument_symbol cannot be empty",
+    ):
+        ReferenceCandleBuilder(
+            security_id=INSTRUMENT_SECURITY_ID,
+            instrument_symbol=" ",
+        )
+
+
 def test_accepts_tick_at_915() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     accepted = builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     assert accepted is True
@@ -48,10 +89,10 @@ def test_accepts_tick_at_915() -> None:
 
 
 def test_ignores_tick_before_915() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     accepted = builder.process_tick(
-        tick(24500.0, 9, 14, 59)
+        tick(100.0, 9, 14, 59)
     )
 
     assert accepted is False
@@ -59,10 +100,10 @@ def test_ignores_tick_before_915() -> None:
 
 
 def test_ignores_tick_at_920() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     accepted = builder.process_tick(
-        tick(24500.0, 9, 20)
+        tick(100.0, 9, 20)
     )
 
     assert accepted is False
@@ -70,7 +111,7 @@ def test_ignores_tick_at_920() -> None:
 
 
 def test_ignores_wrong_security_id() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     accepted = builder.process_tick(
         tick(
@@ -86,86 +127,96 @@ def test_ignores_wrong_security_id() -> None:
 
 
 def test_builds_correct_ohlc() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15, 0)
+        tick(100.0, 9, 15, 0)
     )
 
     builder.process_tick(
-        tick(24520.0, 9, 16, 0)
+        tick(120.0, 9, 16, 0)
     )
 
     builder.process_tick(
-        tick(24480.0, 9, 17, 0)
+        tick(80.0, 9, 17, 0)
     )
 
     builder.process_tick(
-        tick(24510.0, 9, 19, 59)
+        tick(110.0, 9, 19, 59)
     )
 
     candle = builder.finalize(
         datetime(2026, 8, 7, 9, 20)
     )
 
-    assert candle.open == 24500.0
-    assert candle.high == 24520.0
-    assert candle.low == 24480.0
-    assert candle.close == 24510.0
+    assert candle.open == 100.0
+    assert candle.high == 120.0
+    assert candle.low == 80.0
+    assert candle.close == 110.0
+
+    assert (
+        candle.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        candle.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
 
     assert builder.tick_count == 4
     assert builder.is_finalized is True
 
 
 def test_first_tick_becomes_open() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24501.25, 9, 15, 2)
+        tick(101.25, 9, 15, 2)
     )
 
     builder.process_tick(
-        tick(24505.00, 9, 15, 3)
+        tick(105.00, 9, 15, 3)
     )
 
     candle = builder.finalize(
         datetime(2026, 8, 7, 9, 20)
     )
 
-    assert candle.open == 24501.25
+    assert candle.open == 101.25
 
 
 def test_last_tick_becomes_close() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     builder.process_tick(
-        tick(24508.25, 9, 19, 59)
+        tick(108.25, 9, 19, 59)
     )
 
     candle = builder.finalize(
         datetime(2026, 8, 7, 9, 20)
     )
 
-    assert candle.close == 24508.25
+    assert candle.close == 108.25
 
 
 def test_rejects_out_of_order_tick() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     assert (
         builder.process_tick(
-            tick(24500.0, 9, 16, 10)
+            tick(100.0, 9, 16, 10)
         )
         is True
     )
 
     assert (
         builder.process_tick(
-            tick(24400.0, 9, 16, 5)
+            tick(90.0, 9, 16, 5)
         )
         is False
     )
@@ -176,15 +227,15 @@ def test_rejects_out_of_order_tick() -> None:
         datetime(2026, 8, 7, 9, 20)
     )
 
-    assert candle.low == 24500.0
+    assert candle.low == 100.0
 
 
 def test_rejects_tick_from_different_date() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
         tick(
-            price=24500.0,
+            price=100.0,
             hour=9,
             minute=15,
             day=7,
@@ -193,7 +244,7 @@ def test_rejects_tick_from_different_date() -> None:
 
     accepted = builder.process_tick(
         tick(
-            price=25000.0,
+            price=120.0,
             hour=9,
             minute=16,
             day=8,
@@ -205,10 +256,10 @@ def test_rejects_tick_from_different_date() -> None:
 
 
 def test_cannot_finalize_before_920() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     with pytest.raises(
@@ -221,7 +272,7 @@ def test_cannot_finalize_before_920() -> None:
 
 
 def test_cannot_finalize_without_ticks() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     with pytest.raises(
         RuntimeError,
@@ -233,10 +284,10 @@ def test_cannot_finalize_without_ticks() -> None:
 
 
 def test_finalization_is_idempotent() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     first = builder.finalize(
@@ -251,10 +302,10 @@ def test_finalization_is_idempotent() -> None:
 
 
 def test_ticks_are_ignored_after_finalization() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     builder.finalize(
@@ -262,7 +313,7 @@ def test_ticks_are_ignored_after_finalization() -> None:
     )
 
     accepted = builder.process_tick(
-        tick(25000.0, 9, 19)
+        tick(150.0, 9, 19)
     )
 
     assert accepted is False
@@ -270,10 +321,10 @@ def test_ticks_are_ignored_after_finalization() -> None:
 
 
 def test_reset_clears_builder() -> None:
-    builder = ReferenceCandleBuilder()
+    builder = make_builder()
 
     builder.process_tick(
-        tick(24500.0, 9, 15)
+        tick(100.0, 9, 15)
     )
 
     builder.finalize(
@@ -286,3 +337,6 @@ def test_reset_clears_builder() -> None:
     assert builder.trading_date is None
     assert builder.get_candle() is None
     assert builder.is_finalized is False
+
+    assert builder.security_id == INSTRUMENT_SECURITY_ID
+    assert builder.instrument_symbol == INSTRUMENT_SYMBOL

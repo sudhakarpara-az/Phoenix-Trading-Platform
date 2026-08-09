@@ -9,10 +9,17 @@ from src.strategy.strategy_types import ReferenceCandle
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_reference_candle() -> ReferenceCandle:
     return ReferenceCandle(
         trading_date=TRADING_DATE,
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
         end_time=datetime(2026, 8, 7, 9, 20),
         open=24500.0,
