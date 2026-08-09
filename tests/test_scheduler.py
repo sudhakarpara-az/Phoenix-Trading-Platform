@@ -8,6 +8,7 @@ import pytest
 
 from src.services.scheduler import (
     TradingCalendar,
+    TradingDayScheduler,
     TradingDaySnapshot,
     TradingDayState,
     TradingDayTransitionError,
@@ -454,4 +455,384 @@ def test_calendar_rejects_datetime_as_trading_date() -> None:
                 9,
                 15,
             )
+        )
+
+
+def test_scheduler_starts_eligible_trading_day() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    snapshot = scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    assert snapshot.state is TradingDayState.WAITING_FOR_MARKET
+    assert snapshot.started_at == STARTED_AT
+    assert snapshot.updated_at == STARTED_AT
+    assert snapshot.closed_at is None
+    assert scheduler.state is TradingDayState.WAITING_FOR_MARKET
+
+
+def test_scheduler_closes_weekend_on_start() -> None:
+    saturday = date(
+        2026,
+        8,
+        8,
+    )
+
+    scheduler = TradingDayScheduler(
+        trading_date=saturday,
+        created_at=datetime(
+            2026,
+            8,
+            8,
+            8,
+            0,
+        ),
+    )
+
+    started_at = datetime(
+        2026,
+        8,
+        8,
+        9,
+        0,
+    )
+
+    snapshot = scheduler.start(
+        started_at=started_at,
+    )
+
+    assert snapshot.state is TradingDayState.NON_TRADING_DAY
+    assert snapshot.is_terminal is True
+    assert snapshot.closed_at == started_at
+
+
+def test_scheduler_closes_explicit_holiday_on_start() -> None:
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                TRADING_DATE,
+            }
+        )
+    )
+
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+        calendar=calendar,
+    )
+
+    snapshot = scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    assert snapshot.state is TradingDayState.NON_TRADING_DAY
+    assert snapshot.is_terminal is True
+
+
+def test_scheduler_normal_transition_sequence() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    transitions = (
+        (
+            TradingDayState.WAITING_FOR_REFERENCE_CLOSE,
+            datetime(2026, 8, 10, 9, 15),
+        ),
+        (
+            TradingDayState.SELECTING_OPTIONS,
+            datetime(2026, 8, 10, 9, 16),
+        ),
+        (
+            TradingDayState.PREPARING_LEVELS,
+            datetime(2026, 8, 10, 9, 16, 1),
+        ),
+        (
+            TradingDayState.WAITING_FOR_MONITORING,
+            datetime(2026, 8, 10, 9, 17),
+        ),
+        (
+            TradingDayState.MONITORING,
+            datetime(2026, 8, 10, 9, 21),
+        ),
+        (
+            TradingDayState.EXIT_ONLY,
+            datetime(2026, 8, 10, 15, 15),
+        ),
+        (
+            TradingDayState.CLOSED,
+            datetime(2026, 8, 10, 15, 16),
+        ),
+    )
+
+    for target_state, transitioned_at in transitions:
+        snapshot = scheduler.transition(
+            target_state=target_state,
+            transitioned_at=transitioned_at,
+        )
+
+        assert snapshot.state is target_state
+
+    assert scheduler.snapshot.is_terminal is True
+    assert scheduler.snapshot.closed_at == datetime(
+        2026,
+        8,
+        10,
+        15,
+        16,
+    )
+
+
+def test_scheduler_rejects_skipped_morning_transition() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    with pytest.raises(
+        TradingDayTransitionError,
+        match=(
+            "WAITING_FOR_MARKET -> "
+            "SELECTING_OPTIONS"
+        ),
+    ):
+        scheduler.transition(
+            target_state=TradingDayState.SELECTING_OPTIONS,
+            transitioned_at=datetime(
+                2026,
+                8,
+                10,
+                9,
+                16,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        TradingDayState.WAITING_FOR_MARKET,
+        TradingDayState.WAITING_FOR_REFERENCE_CLOSE,
+        TradingDayState.SELECTING_OPTIONS,
+        TradingDayState.PREPARING_LEVELS,
+        TradingDayState.WAITING_FOR_MONITORING,
+        TradingDayState.MONITORING,
+    ],
+)
+def test_active_state_can_enter_exit_only(
+    state: TradingDayState,
+) -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    path = [
+        TradingDayState.WAITING_FOR_REFERENCE_CLOSE,
+        TradingDayState.SELECTING_OPTIONS,
+        TradingDayState.PREPARING_LEVELS,
+        TradingDayState.WAITING_FOR_MONITORING,
+        TradingDayState.MONITORING,
+    ]
+
+    current_at = datetime(
+        2026,
+        8,
+        10,
+        9,
+        15,
+    )
+
+    for target in path:
+        if scheduler.state is state:
+            break
+
+        scheduler.transition(
+            target_state=target,
+            transitioned_at=current_at,
+        )
+
+        current_at = current_at.replace(
+            minute=current_at.minute + 1
+        )
+
+    assert scheduler.state is state
+
+    snapshot = scheduler.transition(
+        target_state=TradingDayState.EXIT_ONLY,
+        transitioned_at=FORCE_EXIT_AT,
+    )
+
+    assert snapshot.state is TradingDayState.EXIT_ONLY
+    assert snapshot.can_accept_new_entries is False
+    assert snapshot.can_manage_positions is True
+
+
+def test_scheduler_cannot_transition_from_terminal_day() -> None:
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                TRADING_DATE,
+            }
+        )
+    )
+
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+        calendar=calendar,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    assert scheduler.can_transition_to(
+        TradingDayState.WAITING_FOR_MARKET
+    ) is False
+
+    with pytest.raises(
+        TradingDayTransitionError,
+        match="illegal trading-day transition",
+    ):
+        scheduler.transition(
+            target_state=TradingDayState.WAITING_FOR_MARKET,
+            transitioned_at=STARTED_AT,
+        )
+
+
+def test_scheduler_rejects_backward_transition_time() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    with pytest.raises(
+        TradingDayTransitionError,
+        match=(
+            "transition timestamp cannot move backwards"
+        ),
+    ):
+        scheduler.transition(
+            target_state=(
+                TradingDayState.WAITING_FOR_REFERENCE_CLOSE
+            ),
+            transitioned_at=CREATED_AT,
+        )
+
+
+def test_scheduler_can_fail_active_day() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    snapshot = scheduler.fail(
+        message=" scheduler coordination failed ",
+        failed_at=datetime(
+            2026,
+            8,
+            10,
+            9,
+            10,
+        ),
+    )
+
+    assert snapshot.state is TradingDayState.FAILED
+    assert snapshot.failure_message == (
+        "scheduler coordination failed"
+    )
+    assert snapshot.is_terminal is True
+
+
+def test_scheduler_terminal_day_cannot_fail() -> None:
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                TRADING_DATE,
+            }
+        )
+    )
+
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+        calendar=calendar,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    with pytest.raises(
+        TradingDayTransitionError,
+        match="terminal trading day cannot fail",
+    ):
+        scheduler.fail(
+            message="unexpected",
+            failed_at=STARTED_AT,
+        )
+
+
+def test_scheduler_start_is_not_repeatable() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    with pytest.raises(
+        TradingDayTransitionError,
+        match="can only start from CREATED",
+    ):
+        scheduler.start(
+            started_at=STARTED_AT,
+        )
+
+
+def test_scheduler_rejects_empty_failure_message() -> None:
+    scheduler = TradingDayScheduler(
+        trading_date=TRADING_DATE,
+        created_at=CREATED_AT,
+    )
+
+    scheduler.start(
+        started_at=STARTED_AT,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="failure message cannot be empty",
+    ):
+        scheduler.fail(
+            message="   ",
+            failed_at=STARTED_AT,
         )
