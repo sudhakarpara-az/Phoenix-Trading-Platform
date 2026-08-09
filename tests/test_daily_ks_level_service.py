@@ -42,7 +42,7 @@ def make_candle(
             trading_date.month,
             trading_date.day,
             9,
-            20,
+            16,
         ),
         open=24500.0,
         high=24530.0,
