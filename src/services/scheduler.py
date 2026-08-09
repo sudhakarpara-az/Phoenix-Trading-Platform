@@ -20,9 +20,16 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from enum import Enum
+from math import isfinite
 from threading import RLock
 from typing import Protocol
 
+from src.option_selection.option_types import (
+    OptionSelectionResult,
+    OptionSelectionStatus,
+    OptionType,
+    SelectedOption,
+)
 from src.runtime.recovery_types import (
     StartupRecoveryPlan,
     StartupRecoveryResult,
@@ -827,6 +834,390 @@ class TradingDayReferenceCoordinator:
             )
 
 
+class MorningOptionSelectionPort(Protocol):
+    """
+    Narrow M10 boundary to the M05 signal-independent
+    option-selection API.
+    """
+
+    def select_for_option_type(
+        self,
+        *,
+        option_type: OptionType,
+        trading_date: date,
+        reference_price: float,
+        requested_at: datetime,
+        requested_expiry: date | None = None,
+    ) -> OptionSelectionResult:
+        ...
+
+
+class TradingDayOptionSelectionError(RuntimeError):
+    """
+    Raised when M10 cannot safely accept a morning option pair.
+    """
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayOptionSelectionResult:
+    """
+    Immutable result of one M10 CE/PE morning-selection attempt.
+
+    The attempt is complete only when both independent M05
+    requests produced valid selected contracts.
+    """
+
+    call_result: OptionSelectionResult
+    put_result: OptionSelectionResult
+    attempted_at: datetime
+    completed_at: datetime | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        return (
+            self.call_result.status
+            is OptionSelectionStatus.SELECTED
+            and self.put_result.status
+            is OptionSelectionStatus.SELECTED
+            and self.completed_at is not None
+        )
+
+    @property
+    def selected_call(
+        self,
+    ) -> SelectedOption | None:
+        return self.call_result.selected_option
+
+    @property
+    def selected_put(
+        self,
+    ) -> SelectedOption | None:
+        return self.put_result.selected_option
+
+
+class TradingDayOptionSelectionCoordinator:
+    """
+    Coordinates the M10 09:16 CE/PE selection milestone.
+
+    Rules:
+        - Selection cannot begin before the 09:15 reference
+          window has closed.
+        - CALL and PUT are requested independently from M05.
+        - Both use the same supplied NIFTY reference price.
+        - Both must succeed before M10 enters PREPARING_LEVELS.
+        - A partial/failed pair remains SELECTING_OPTIONS.
+        - A successful pair is immutable for this coordinator
+          instance and repeated calls return that same pair.
+
+    This coordinator does not build option reference candles or
+    calculate KS levels. Those responsibilities belong to T07.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        selection_service: MorningOptionSelectionPort,
+        schedule: ReferenceWindowSchedule | None = None,
+    ) -> None:
+        self._scheduler = scheduler
+        self._selection_service = selection_service
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else ReferenceWindowSchedule()
+        )
+
+        self._completed_result: (
+            TradingDayOptionSelectionResult | None
+        ) = None
+
+        self._lock = RLock()
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def completed_result(
+        self,
+    ) -> TradingDayOptionSelectionResult | None:
+        with self._lock:
+            return self._completed_result
+
+    def select_options(
+        self,
+        *,
+        reference_price: float,
+        requested_at: datetime,
+        requested_expiry: date | None = None,
+    ) -> TradingDayOptionSelectionResult:
+        """
+        Independently select the morning CALL and PUT contracts.
+
+        A failed attempt is intentionally retryable. No successful
+        side is frozen independently because Phoenix requires one
+        coherent morning CE/PE pair.
+        """
+
+        self._validate_datetime(
+            requested_at
+        )
+
+        self._validate_trading_date(
+            requested_at
+        )
+
+        self._validate_reference_price(
+            reference_price
+        )
+
+        if (
+            requested_at.time()
+            < self._schedule.reference_candle_end
+        ):
+            raise TradingDayOptionSelectionError(
+                "option selection cannot begin before "
+                "reference_candle_end"
+            )
+
+        with self._lock:
+            if self._completed_result is not None:
+                self._validate_repeat_request(
+                    requested_expiry=(
+                        requested_expiry
+                    )
+                )
+
+                return self._completed_result
+
+            state = self._scheduler.state
+
+            if (
+                state
+                is TradingDayState.WAITING_FOR_REFERENCE_CLOSE
+            ):
+                self._scheduler.transition(
+                    target_state=(
+                        TradingDayState.SELECTING_OPTIONS
+                    ),
+                    transitioned_at=requested_at,
+                )
+
+            elif (
+                state
+                is not TradingDayState.SELECTING_OPTIONS
+            ):
+                raise TradingDayOptionSelectionError(
+                    "option selection requires "
+                    "WAITING_FOR_REFERENCE_CLOSE or "
+                    "SELECTING_OPTIONS state"
+                )
+
+            call_result = (
+                self._selection_service
+                .select_for_option_type(
+                    option_type=OptionType.CALL,
+                    trading_date=(
+                        self._scheduler.trading_date
+                    ),
+                    reference_price=reference_price,
+                    requested_at=requested_at,
+                    requested_expiry=requested_expiry,
+                )
+            )
+
+            put_result = (
+                self._selection_service
+                .select_for_option_type(
+                    option_type=OptionType.PUT,
+                    trading_date=(
+                        self._scheduler.trading_date
+                    ),
+                    reference_price=reference_price,
+                    requested_at=requested_at,
+                    requested_expiry=requested_expiry,
+                )
+            )
+
+            attempt = TradingDayOptionSelectionResult(
+                call_result=call_result,
+                put_result=put_result,
+                attempted_at=requested_at,
+            )
+
+            if not (
+                call_result.status
+                is OptionSelectionStatus.SELECTED
+                and put_result.status
+                is OptionSelectionStatus.SELECTED
+            ):
+                return attempt
+
+            call_option = (
+                call_result.selected_option
+            )
+
+            put_option = (
+                put_result.selected_option
+            )
+
+            assert call_option is not None
+            assert put_option is not None
+
+            self._validate_selected_pair(
+                call_option=call_option,
+                put_option=put_option,
+                requested_expiry=requested_expiry,
+            )
+
+            completed = TradingDayOptionSelectionResult(
+                call_result=call_result,
+                put_result=put_result,
+                attempted_at=requested_at,
+                completed_at=requested_at,
+            )
+
+            self._scheduler.transition(
+                target_state=(
+                    TradingDayState.PREPARING_LEVELS
+                ),
+                transitioned_at=requested_at,
+            )
+
+            self._completed_result = completed
+
+            return completed
+
+    def _validate_selected_pair(
+        self,
+        *,
+        call_option: SelectedOption,
+        put_option: SelectedOption,
+        requested_expiry: date | None,
+    ) -> None:
+        if (
+            call_option.option_type
+            is not OptionType.CALL
+        ):
+            raise TradingDayOptionSelectionError(
+                "CALL selection returned a non-CALL contract"
+            )
+
+        if (
+            put_option.option_type
+            is not OptionType.PUT
+        ):
+            raise TradingDayOptionSelectionError(
+                "PUT selection returned a non-PUT contract"
+            )
+
+        if (
+            call_option.contract.underlying_symbol
+            != put_option.contract.underlying_symbol
+        ):
+            raise TradingDayOptionSelectionError(
+                "selected CALL and PUT underlying symbols "
+                "do not match"
+            )
+
+        if call_option.expiry != put_option.expiry:
+            raise TradingDayOptionSelectionError(
+                "selected CALL and PUT expiries do not match"
+            )
+
+        if (
+            requested_expiry is not None
+            and (
+                call_option.expiry
+                != requested_expiry
+                or put_option.expiry
+                != requested_expiry
+            )
+        ):
+            raise TradingDayOptionSelectionError(
+                "selected option expiry does not match "
+                "requested_expiry"
+            )
+
+        if (
+            call_option.security_id
+            == put_option.security_id
+        ):
+            raise TradingDayOptionSelectionError(
+                "selected CALL and PUT must have distinct "
+                "security IDs"
+            )
+
+    def _validate_repeat_request(
+        self,
+        *,
+        requested_expiry: date | None,
+    ) -> None:
+        if requested_expiry is None:
+            return
+
+        assert self._completed_result is not None
+        assert (
+            self._completed_result.selected_call
+            is not None
+        )
+
+        if (
+            self._completed_result
+            .selected_call
+            .expiry
+            != requested_expiry
+        ):
+            raise TradingDayOptionSelectionError(
+                "morning option pair is already fixed for "
+                "another expiry"
+            )
+
+    def _validate_trading_date(
+        self,
+        requested_at: datetime,
+    ) -> None:
+        if (
+            requested_at.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayOptionSelectionError(
+                "option-selection timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _validate_reference_price(
+        reference_price: float,
+    ) -> None:
+        if (
+            isinstance(reference_price, bool)
+            or not isinstance(
+                reference_price,
+                (int, float),
+            )
+            or not isfinite(reference_price)
+            or reference_price <= 0
+        ):
+            raise TradingDayOptionSelectionError(
+                "reference_price must be a finite number "
+                "greater than zero"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "option-selection timestamp must be a datetime"
+            )
+
+
 class StartupRecoveryPort(Protocol):
     """
     Narrow M10 boundary to the existing M08 startup-recovery
@@ -1162,9 +1553,13 @@ class TradingDayStartupCoordinator:
 
 
 __all__ = [
+    "MorningOptionSelectionPort",
     "ReferenceWindowSchedule",
     "StartupRecoveryPort",
     "TradingCalendar",
+    "TradingDayOptionSelectionCoordinator",
+    "TradingDayOptionSelectionError",
+    "TradingDayOptionSelectionResult",
     "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
