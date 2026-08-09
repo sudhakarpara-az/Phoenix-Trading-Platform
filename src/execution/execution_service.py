@@ -140,6 +140,33 @@ class ExecutionService:
         return self._allow_live_orders
 
     @property
+    def pricing_policy(
+        self,
+    ) -> OrderPricingPolicy:
+        """
+        Return the exact pricing policy owned by this M06 service.
+
+        T14 runtime composition uses this read-only boundary so
+        account required-cash sizing and the eventual M06 order
+        cannot silently use different pricing configuration.
+        """
+
+        return self._pricing_policy
+
+    @property
+    def quantity_policy(
+        self,
+    ) -> QuantityPolicy:
+        """
+        Return the exact quantity policy owned by this M06 service.
+
+        T14 uses the same instance when calculating pre-execution
+        lot sizing for M07/M09 gates.
+        """
+
+        return self._quantity_policy
+
+    @property
     def dry_run_executor(
         self,
     ) -> DryRunExecutor:
