@@ -18,7 +18,7 @@ M10 coordinates those existing boundaries across one trading day.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import Enum
 from threading import RLock
 from typing import Protocol
@@ -630,6 +630,203 @@ class TradingDayScheduler:
             )
 
 
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class ReferenceWindowSchedule:
+    """
+    M10 schedule for the Phoenix 09:15 reference window.
+
+    This contract owns only the reference-window boundaries.
+    Monitoring activation and force-exit timing remain separate
+    M10 tasks.
+    """
+
+    market_open: time = time(9, 15)
+    reference_candle_end: time = time(9, 16)
+
+    def __post_init__(self) -> None:
+        if type(self.market_open) is not time:
+            raise TypeError(
+                "market_open must be a time"
+            )
+
+        if type(self.reference_candle_end) is not time:
+            raise TypeError(
+                "reference_candle_end must be a time"
+            )
+
+        if (
+            self.reference_candle_end
+            <= self.market_open
+        ):
+            raise ValueError(
+                "reference_candle_end must be after "
+                "market_open"
+            )
+
+
+class TradingDayReferenceCoordinator:
+    """
+    Coordinates only the M10 09:15-09:16 reference boundary.
+
+    It does not build a ReferenceCandle and does not select an
+    option contract.
+
+    The final selected CE/PE contracts are not known until the
+    next M10 selection phase. T07 therefore owns proving and
+    loading each selected contract's completed reference candle.
+
+    State ownership:
+
+        WAITING_FOR_MARKET
+            ->
+        WAITING_FOR_REFERENCE_CLOSE
+
+    T06 owns the later transition to SELECTING_OPTIONS.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        schedule: ReferenceWindowSchedule | None = None,
+    ) -> None:
+        self._scheduler = scheduler
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else ReferenceWindowSchedule()
+        )
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def schedule(self) -> ReferenceWindowSchedule:
+        return self._schedule
+
+    def is_reference_window_open(
+        self,
+        now: datetime,
+    ) -> bool:
+        self._validate_datetime(
+            now
+        )
+
+        self._validate_trading_date(
+            now
+        )
+
+        current_time = now.time()
+
+        return (
+            self._schedule.market_open
+            <= current_time
+            < self._schedule.reference_candle_end
+        )
+
+    def is_reference_window_complete(
+        self,
+        now: datetime,
+    ) -> bool:
+        self._validate_datetime(
+            now
+        )
+
+        self._validate_trading_date(
+            now
+        )
+
+        return (
+            now.time()
+            >= self._schedule.reference_candle_end
+        )
+
+    def begin_reference_window(
+        self,
+        *,
+        opened_at: datetime,
+    ) -> TradingDaySnapshot:
+        """
+        Enter WAITING_FOR_REFERENCE_CLOSE at or after 09:15.
+
+        Calling again while already waiting for reference close
+        is idempotent.
+
+        A late application start may still establish this
+        scheduler milestone after 09:16; T06/T07 must then prove
+        that option selection and completed reference-candle data
+        are available before entries can ever be enabled.
+        """
+
+        self._validate_datetime(
+            opened_at
+        )
+
+        self._validate_trading_date(
+            opened_at
+        )
+
+        if (
+            opened_at.time()
+            < self._schedule.market_open
+        ):
+            raise TradingDayTransitionError(
+                "reference window cannot begin before "
+                "market_open"
+            )
+
+        state = self._scheduler.state
+
+        if (
+            state
+            is TradingDayState.WAITING_FOR_REFERENCE_CLOSE
+        ):
+            return self._scheduler.snapshot
+
+        if (
+            state
+            is not TradingDayState.WAITING_FOR_MARKET
+        ):
+            raise TradingDayTransitionError(
+                "reference window can only begin from "
+                "WAITING_FOR_MARKET"
+            )
+
+        return self._scheduler.transition(
+            target_state=(
+                TradingDayState
+                .WAITING_FOR_REFERENCE_CLOSE
+            ),
+            transitioned_at=opened_at,
+        )
+
+    def _validate_trading_date(
+        self,
+        now: datetime,
+    ) -> None:
+        if (
+            now.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayTransitionError(
+                "reference-window timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "reference-window timestamp must be a datetime"
+            )
+
+
 class StartupRecoveryPort(Protocol):
     """
     Narrow M10 boundary to the existing M08 startup-recovery
@@ -965,8 +1162,10 @@ class TradingDayStartupCoordinator:
 
 
 __all__ = [
+    "ReferenceWindowSchedule",
     "StartupRecoveryPort",
     "TradingCalendar",
+    "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
     "TradingDayStartupCoordinator",
