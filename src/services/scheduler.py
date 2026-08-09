@@ -24,6 +24,7 @@ from math import isfinite
 from threading import RLock
 from typing import Protocol
 
+from src.market.candle_builder import HistoricalCandle
 from src.option_selection.option_types import (
     OptionSelectionResult,
     OptionSelectionStatus,
@@ -40,6 +41,13 @@ from src.runtime.runtime_orchestrator import (
 from src.runtime.runtime_types import (
     RuntimeSnapshot,
     RuntimeState,
+)
+from src.strategy.daily_ks_level_service import (
+    DailyKSLevelService,
+)
+from src.strategy.strategy_types import (
+    KSLevels,
+    ReferenceCandle,
 )
 
 
@@ -1218,6 +1226,470 @@ class TradingDayOptionSelectionCoordinator:
             )
 
 
+class HistoricalCandlePort(Protocol):
+    """
+    Narrow M10 boundary for completed historical one-minute
+    candles.
+
+    Concrete broker adapters remain outside strategy logic.
+    """
+
+    def get_one_minute_candle(
+        self,
+        *,
+        security_id: str,
+        symbol: str,
+        candle_start: datetime,
+        requested_at: datetime,
+    ) -> HistoricalCandle:
+        ...
+
+
+class TradingDayLevelPreparationError(RuntimeError):
+    """
+    Raised when selected-contract reference data cannot safely
+    become the day's CE/PE KS level sets.
+    """
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayLevelPreparationResult:
+    """
+    Immutable M10 result after both selected contracts have
+    proven reference candles and independent KS levels.
+    """
+
+    selected_call: SelectedOption
+    selected_put: SelectedOption
+
+    call_reference_candle: ReferenceCandle
+    put_reference_candle: ReferenceCandle
+
+    call_levels: KSLevels
+    put_levels: KSLevels
+
+    prepared_at: datetime
+
+    @property
+    def is_ready(self) -> bool:
+        return True
+
+
+class TradingDayLevelPreparationCoordinator:
+    """
+    Coordinates selected-option reference-candle and KS readiness.
+
+    Phoenix rules:
+        - Requires a completed T06 CE/PE selection pair.
+        - Requires M10 PREPARING_LEVELS state.
+        - Loads each selected contract's exact completed
+          09:15-09:16 one-minute candle.
+        - CALL candle must belong to the selected CALL contract.
+        - PUT candle must belong to the selected PUT contract.
+        - CE and PE use separate DailyKSLevelService instances.
+        - NIFTY spot is never used for KS calculations.
+        - Both sides must succeed before M10 enters
+          WAITING_FOR_MONITORING.
+        - A successful preparation is immutable/idempotent.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        candle_provider: HistoricalCandlePort,
+        call_level_service: DailyKSLevelService,
+        put_level_service: DailyKSLevelService,
+        schedule: ReferenceWindowSchedule | None = None,
+    ) -> None:
+        if (
+            call_level_service
+            is put_level_service
+        ):
+            raise ValueError(
+                "CALL and PUT must use separate "
+                "DailyKSLevelService instances"
+            )
+
+        self._scheduler = scheduler
+        self._candle_provider = candle_provider
+        self._call_level_service = call_level_service
+        self._put_level_service = put_level_service
+
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else ReferenceWindowSchedule()
+        )
+
+        self._completed_result: (
+            TradingDayLevelPreparationResult | None
+        ) = None
+
+        self._lock = RLock()
+
+    @property
+    def completed_result(
+        self,
+    ) -> TradingDayLevelPreparationResult | None:
+        with self._lock:
+            return self._completed_result
+
+    def prepare_levels(
+        self,
+        *,
+        selection: TradingDayOptionSelectionResult,
+        prepared_at: datetime,
+    ) -> TradingDayLevelPreparationResult:
+        """
+        Load both selected option reference candles and calculate
+        their independent KS level sets.
+        """
+
+        self._validate_datetime(
+            prepared_at
+        )
+
+        self._validate_trading_date(
+            prepared_at
+        )
+
+        if (
+            prepared_at.time()
+            < self._schedule.reference_candle_end
+        ):
+            raise TradingDayLevelPreparationError(
+                "levels cannot be prepared before "
+                "reference_candle_end"
+            )
+
+        if not selection.is_complete:
+            raise TradingDayLevelPreparationError(
+                "completed CE/PE option selection is required"
+            )
+
+        call_option = selection.selected_call
+        put_option = selection.selected_put
+
+        if (
+            call_option is None
+            or put_option is None
+        ):
+            raise TradingDayLevelPreparationError(
+                "completed option selection is missing "
+                "selected contracts"
+            )
+
+        self._validate_selected_options(
+            call_option=call_option,
+            put_option=put_option,
+        )
+
+        with self._lock:
+            if self._completed_result is not None:
+                self._validate_repeat_selection(
+                    call_option=call_option,
+                    put_option=put_option,
+                )
+
+                return self._completed_result
+
+            if (
+                self._scheduler.state
+                is not TradingDayState.PREPARING_LEVELS
+            ):
+                raise TradingDayLevelPreparationError(
+                    "level preparation requires "
+                    "PREPARING_LEVELS state"
+                )
+
+            candle_start = datetime.combine(
+                self._scheduler.trading_date,
+                self._schedule.market_open,
+            )
+
+            call_historical = (
+                self._candle_provider
+                .get_one_minute_candle(
+                    security_id=(
+                        call_option.security_id
+                    ),
+                    symbol=call_option.symbol,
+                    candle_start=candle_start,
+                    requested_at=prepared_at,
+                )
+            )
+
+            put_historical = (
+                self._candle_provider
+                .get_one_minute_candle(
+                    security_id=(
+                        put_option.security_id
+                    ),
+                    symbol=put_option.symbol,
+                    candle_start=candle_start,
+                    requested_at=prepared_at,
+                )
+            )
+
+            self._validate_historical_candle(
+                candle=call_historical,
+                selected_option=call_option,
+            )
+
+            self._validate_historical_candle(
+                candle=put_historical,
+                selected_option=put_option,
+            )
+
+            call_reference = (
+                self._to_reference_candle(
+                    call_historical
+                )
+            )
+
+            put_reference = (
+                self._to_reference_candle(
+                    put_historical
+                )
+            )
+
+            call_levels = (
+                self._call_level_service
+                .calculate(
+                    candle=call_reference,
+                    calculated_at=prepared_at,
+                )
+            )
+
+            put_levels = (
+                self._put_level_service
+                .calculate(
+                    candle=put_reference,
+                    calculated_at=prepared_at,
+                )
+            )
+
+            self._validate_levels(
+                levels=call_levels,
+                selected_option=call_option,
+            )
+
+            self._validate_levels(
+                levels=put_levels,
+                selected_option=put_option,
+            )
+
+            completed = (
+                TradingDayLevelPreparationResult(
+                    selected_call=call_option,
+                    selected_put=put_option,
+                    call_reference_candle=(
+                        call_reference
+                    ),
+                    put_reference_candle=(
+                        put_reference
+                    ),
+                    call_levels=call_levels,
+                    put_levels=put_levels,
+                    prepared_at=prepared_at,
+                )
+            )
+
+            self._scheduler.transition(
+                target_state=(
+                    TradingDayState
+                    .WAITING_FOR_MONITORING
+                ),
+                transitioned_at=prepared_at,
+            )
+
+            self._completed_result = completed
+
+            return completed
+
+    def _validate_selected_options(
+        self,
+        *,
+        call_option: SelectedOption,
+        put_option: SelectedOption,
+    ) -> None:
+        if (
+            call_option.option_type
+            is not OptionType.CALL
+        ):
+            raise TradingDayLevelPreparationError(
+                "selected CALL contract is invalid"
+            )
+
+        if (
+            put_option.option_type
+            is not OptionType.PUT
+        ):
+            raise TradingDayLevelPreparationError(
+                "selected PUT contract is invalid"
+            )
+
+        if (
+            call_option.security_id
+            == put_option.security_id
+        ):
+            raise TradingDayLevelPreparationError(
+                "selected CALL and PUT must have distinct "
+                "security IDs"
+            )
+
+        if call_option.expiry != put_option.expiry:
+            raise TradingDayLevelPreparationError(
+                "selected CALL and PUT expiries must match"
+            )
+
+    def _validate_historical_candle(
+        self,
+        *,
+        candle: HistoricalCandle,
+        selected_option: SelectedOption,
+    ) -> None:
+        expected_start = datetime.combine(
+            self._scheduler.trading_date,
+            self._schedule.market_open,
+        )
+
+        expected_end = datetime.combine(
+            self._scheduler.trading_date,
+            self._schedule.reference_candle_end,
+        )
+
+        if (
+            candle.security_id
+            != selected_option.security_id
+        ):
+            raise TradingDayLevelPreparationError(
+                "historical candle security ID does not match "
+                "selected option"
+            )
+
+        if (
+            candle.symbol
+            != selected_option.symbol
+        ):
+            raise TradingDayLevelPreparationError(
+                "historical candle symbol does not match "
+                "selected option"
+            )
+
+        if candle.start_time != expected_start:
+            raise TradingDayLevelPreparationError(
+                "historical candle does not start at 09:15"
+            )
+
+        if candle.end_time != expected_end:
+            raise TradingDayLevelPreparationError(
+                "historical candle does not end at 09:16"
+            )
+
+    def _validate_levels(
+        self,
+        *,
+        levels: KSLevels,
+        selected_option: SelectedOption,
+    ) -> None:
+        if (
+            levels.trading_date
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayLevelPreparationError(
+                "KS levels trading date does not match "
+                "scheduler trading date"
+            )
+
+        if (
+            levels.instrument_security_id
+            != selected_option.security_id
+        ):
+            raise TradingDayLevelPreparationError(
+                "KS level security ID does not match "
+                "selected option"
+            )
+
+        if (
+            levels.instrument_symbol
+            != selected_option.symbol
+        ):
+            raise TradingDayLevelPreparationError(
+                "KS level symbol does not match selected option"
+            )
+
+    def _validate_repeat_selection(
+        self,
+        *,
+        call_option: SelectedOption,
+        put_option: SelectedOption,
+    ) -> None:
+        assert self._completed_result is not None
+
+        if (
+            self._completed_result
+            .selected_call
+            .security_id
+            != call_option.security_id
+            or self._completed_result
+            .selected_put
+            .security_id
+            != put_option.security_id
+        ):
+            raise TradingDayLevelPreparationError(
+                "KS levels are already fixed for another "
+                "selected option pair"
+            )
+
+    def _validate_trading_date(
+        self,
+        prepared_at: datetime,
+    ) -> None:
+        if (
+            prepared_at.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayLevelPreparationError(
+                "level-preparation timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _to_reference_candle(
+        candle: HistoricalCandle,
+    ) -> ReferenceCandle:
+        return ReferenceCandle(
+            trading_date=(
+                candle.start_time.date()
+            ),
+            instrument_security_id=(
+                candle.security_id
+            ),
+            instrument_symbol=candle.symbol,
+            start_time=candle.start_time,
+            end_time=candle.end_time,
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+        )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "level-preparation timestamp must be "
+                "a datetime"
+            )
+
+
 class StartupRecoveryPort(Protocol):
     """
     Narrow M10 boundary to the existing M08 startup-recovery
@@ -1553,6 +2025,7 @@ class TradingDayStartupCoordinator:
 
 
 __all__ = [
+    "HistoricalCandlePort",
     "MorningOptionSelectionPort",
     "ReferenceWindowSchedule",
     "StartupRecoveryPort",
@@ -1560,6 +2033,9 @@ __all__ = [
     "TradingDayOptionSelectionCoordinator",
     "TradingDayOptionSelectionError",
     "TradingDayOptionSelectionResult",
+    "TradingDayLevelPreparationCoordinator",
+    "TradingDayLevelPreparationError",
+    "TradingDayLevelPreparationResult",
     "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
