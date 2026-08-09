@@ -374,7 +374,7 @@ def test_delta_outside_range_is_removed() -> None:
     )
 
 
-def test_closest_delta_to_064_wins() -> None:
+def test_closest_delta_to_060_wins() -> None:
     delta_59 = make_candidate(
         security_id="101",
         option_type=OptionType.CALL,
@@ -431,7 +431,7 @@ def test_closest_delta_to_064_wins() -> None:
 
     assert (
         result.selected_option.security_id
-        == "103"
+        == "101"
     )
 
 
@@ -621,7 +621,7 @@ def test_selected_option_preserves_execution_inputs() -> None:
     assert option.strike == 24600
     assert option.ltp == 132.75
     assert option.lot_size == 65
-    assert option.selection_delta_target == 0.64
+    assert option.selection_delta_target == 0.60
 
 
 def test_fresh_snapshot_can_be_reused_from_cache() -> None:
@@ -825,15 +825,15 @@ def test_put_absolute_delta_rule_survives_full_pipeline() -> None:
 
     assert (
         result.selected_option.security_id
-        == "202"
+        == "201"
     )
 
     assert (
         result.selected_option.delta
-        == -0.64
+        == -0.60
     )
 
     assert (
         result.selected_option.delta_magnitude
-        == 0.64
+        == 0.60
     )

@@ -33,7 +33,7 @@ class DeltaFilterConfig:
 
     minimum_delta: float = 0.59
     maximum_delta: float = 0.69
-    preferred_delta: float = 0.64
+    preferred_delta: float = 0.60
 
     def __post_init__(self) -> None:
         values = {

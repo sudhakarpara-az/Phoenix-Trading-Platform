@@ -408,7 +408,7 @@ def test_best_delta_candidate_is_selected() -> None:
 
     assert (
         result.selected_option.security_id
-        == "102"
+        == "101"
     )
 
 
