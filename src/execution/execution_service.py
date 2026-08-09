@@ -25,6 +25,7 @@ from threading import RLock
 
 from src.execution.broker_execution_provider import (
     BrokerExecutionProvider,
+    BrokerOrderSnapshot,
 )
 from src.execution.dry_run_executor import (
     DryRunExecutor,
@@ -41,6 +42,7 @@ from src.execution.execution_types import (
 from src.execution.idempotency_guard import (
     DuplicateOrderGuard,
     IdempotencyKey,
+    IdempotencyState,
 )
 from src.execution.order_eligibility_validator import (
     OrderEligibilityContext,
@@ -177,6 +179,191 @@ class ExecutionService:
         self,
     ) -> DuplicateOrderGuard:
         return self._idempotency_guard
+
+    @property
+    def broker_provider(
+        self,
+    ) -> BrokerExecutionProvider:
+        """
+        Return the exact broker provider owned by M06.
+
+        T14 must reconcile an entry through the same broker
+        boundary that submitted the original order.
+        """
+
+        return self._broker_provider
+
+    def refresh_entry_order_status(
+        self,
+        *,
+        intent: OrderIntent,
+        execution_result: ExecutionResult,
+    ) -> BrokerOrderSnapshot:
+        """
+        Refresh one already-submitted LIVE entry from broker truth.
+
+        This method does NOT submit another order.
+
+        It:
+            - verifies the execution result belongs to the intent,
+            - queries the exact M06 broker provider,
+            - updates M06 OrderStateMachine when broker truth moves,
+            - completes idempotency after a proven full fill,
+            - releases submitted idempotency only after a proven
+              cancellation.
+
+        UNKNOWN remains RECONCILIATION_REQUIRED and therefore
+        non-terminal.
+        """
+
+        if (
+            execution_result.intent_id
+            != intent.intent_id
+        ):
+            raise ValueError(
+                "execution result does not belong "
+                "to supplied entry intent"
+            )
+
+        broker_reference = (
+            execution_result.broker_reference
+        )
+
+        if broker_reference is None:
+            raise ValueError(
+                "entry reconciliation requires "
+                "broker reference"
+            )
+
+        key = IdempotencyKey.from_signal_id(
+            intent.signal.signal_id
+        )
+
+        record = self._idempotency_guard.get(
+            key
+        )
+
+        if record is None:
+            raise RuntimeError(
+                "entry reconciliation requires "
+                "existing idempotency record"
+            )
+
+        if (
+            record.intent_id
+            != intent.intent_id.value
+        ):
+            raise RuntimeError(
+                "idempotency intent does not match "
+                "entry intent"
+            )
+
+        snapshot = (
+            self._broker_provider
+            .get_order_status(
+                broker_reference
+            )
+        )
+
+        if (
+            snapshot.broker_reference
+            != broker_reference
+        ):
+            raise RuntimeError(
+                "broker snapshot reference does not match "
+                "entry execution reference"
+            )
+
+        if (
+            snapshot.quantity
+            != intent.quantity
+        ):
+            raise RuntimeError(
+                "broker snapshot quantity does not match "
+                "entry intent quantity"
+            )
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.FILLED
+        ):
+            if (
+                snapshot.filled_quantity
+                != intent.quantity
+            ):
+                raise RuntimeError(
+                    "FILLED broker snapshot must prove "
+                    "full entry quantity"
+                )
+
+            if snapshot.average_price is None:
+                raise RuntimeError(
+                    "FILLED broker snapshot requires "
+                    "average fill price"
+                )
+
+        target_state = (
+            self._map_broker_status(
+                snapshot.status
+            )
+        )
+
+        current_state = (
+            self._state_machine
+            .get_state(
+                intent.intent_id
+            )
+        )
+
+        if current_state is not target_state:
+            if (
+                self._state_machine
+                .is_terminal(
+                    intent.intent_id
+                )
+            ):
+                raise RuntimeError(
+                    "terminal entry order conflicts with "
+                    "current broker truth"
+                )
+
+            self._state_machine.transition(
+                intent.intent_id,
+                target_state,
+                snapshot.updated_at,
+                message=snapshot.message,
+            )
+
+        record = self._idempotency_guard.get(
+            key
+        )
+
+        assert record is not None
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.FILLED
+            and record.state
+            is IdempotencyState.SUBMITTED
+        ):
+            self._idempotency_guard.mark_completed(
+                key=key,
+                changed_at=snapshot.updated_at,
+            )
+
+        elif (
+            snapshot.status
+            is BrokerOrderStatus.CANCELLED
+            and snapshot.filled_quantity == 0
+            and record.state
+            is IdempotencyState.SUBMITTED
+        ):
+            self._idempotency_guard.release_after_reconciliation(
+                key=key,
+                changed_at=snapshot.updated_at,
+            )
+
+        return snapshot
 
     def execute(
         self,
