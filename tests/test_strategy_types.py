@@ -1,4 +1,4 @@
-﻿from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError
 from datetime import date, datetime
 
 import pytest
@@ -27,7 +27,7 @@ def make_reference_candle() -> ReferenceCandle:
         instrument_security_id=INSTRUMENT_SECURITY_ID,
         instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        end_time=datetime(2026, 8, 7, 9, 16),
         open=24500.0,
         high=24530.0,
         low=24480.0,
@@ -91,7 +91,7 @@ def test_reference_candle_rejects_high_below_low() -> None:
             instrument_security_id=INSTRUMENT_SECURITY_ID,
             instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 7, 9, 15),
-            end_time=datetime(2026, 8, 7, 9, 20),
+            end_time=datetime(2026, 8, 7, 9, 16),
             open=24500.0,
             high=24470.0,
             low=24480.0,
@@ -127,7 +127,7 @@ def test_reference_candle_rejects_wrong_date() -> None:
             instrument_security_id=INSTRUMENT_SECURITY_ID,
             instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 6, 9, 15),
-            end_time=datetime(2026, 8, 7, 9, 20),
+            end_time=datetime(2026, 8, 7, 9, 16),
             open=24500.0,
             high=24530.0,
             low=24480.0,
@@ -266,7 +266,7 @@ def test_reference_candle_rejects_empty_instrument_identity() -> None:
             instrument_security_id=" ",
             instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 7, 9, 15),
-            end_time=datetime(2026, 8, 7, 9, 20),
+            end_time=datetime(2026, 8, 7, 9, 16),
             open=24500.0,
             high=24530.0,
             low=24480.0,

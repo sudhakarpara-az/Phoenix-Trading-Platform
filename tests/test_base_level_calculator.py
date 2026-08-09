@@ -23,7 +23,7 @@ def make_candle(
         instrument_security_id=INSTRUMENT_SECURITY_ID,
         instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        end_time=datetime(2026, 8, 7, 9, 16),
         open=open_price,
         high=high,
         low=low,

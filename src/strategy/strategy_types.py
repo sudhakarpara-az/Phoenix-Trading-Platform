@@ -67,9 +67,9 @@ class LevelEventType(str, Enum):
 @dataclass(frozen=True, slots=True)
 class ReferenceCandle:
     """
-    Completed NIFTY 09:15–09:20 reference candle.
+    Completed strategy-instrument 09:15–09:16 reference candle.
 
-    This candle becomes immutable after 09:20 and is the source
+    This candle becomes immutable after 09:16 and is the source
     for the day's KS Phoenix calculations.
     """
 

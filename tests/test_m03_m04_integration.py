@@ -111,6 +111,7 @@ def build_pipeline():
 
     candle_builder = ReferenceCandleBuilder(
         security_id="13",
+        instrument_symbol="NIFTY 50",
     )
 
     level_service = DailyKSLevelService()
@@ -159,9 +160,12 @@ def build_pipeline():
 
 def prepare_trading_day(pipeline):
     """
-    Build the 09:15-09:20 reference candle,
-    calculate KS levels, and move the strategy
-    into MONITORING state.
+    Build the completed 09:15-09:16 reference candle,
+    calculate KS levels, and then advance the session to
+    the existing monitoring_start boundary.
+
+    During PRE-M10-C02, reference-candle completion and
+    monitoring activation are deliberately separate.
     """
 
     session = pipeline["session"]
@@ -170,33 +174,98 @@ def prepare_trading_day(pipeline):
 
     assert (
         session.update(
-            datetime(2026, 8, 7, 9, 15)
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                15,
+                0,
+            )
         )
         is StrategySessionState.BUILDING_REFERENCE_CANDLE
     )
 
+    # Preserve the historical OHLC used by these integration
+    # tests, but fit every accepted tick inside the completed
+    # 09:15 one-minute candle.
     reference_ticks = [
-        make_tick(24500.0, 9, 15, 0),
-        make_tick(24510.0, 9, 15, 30),
-        make_tick(24520.0, 9, 16, 0),
-        make_tick(24530.0, 9, 17, 0),
-        make_tick(24490.0, 9, 18, 0),
-        make_tick(24480.0, 9, 19, 0),
-        make_tick(24510.0, 9, 19, 59),
+        make_tick(
+            24500.0,
+            9,
+            15,
+            0,
+        ),
+        make_tick(
+            24530.0,
+            9,
+            15,
+            20,
+        ),
+        make_tick(
+            24480.0,
+            9,
+            15,
+            40,
+        ),
+        make_tick(
+            24510.0,
+            9,
+            15,
+            59,
+        ),
     ]
 
-    for tick in reference_ticks:
-        assert candle_builder.process_tick(tick) is True
+    for market_tick in reference_ticks:
+        assert (
+            candle_builder.process_tick(
+                market_tick
+            )
+            is True
+        )
 
+    # At exactly 09:16 the completed 09:15 candle is closed.
     assert (
         session.update(
-            datetime(2026, 8, 7, 9, 20)
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                16,
+                0,
+            )
         )
         is StrategySessionState.LEVELS_READY
     )
 
     candle = candle_builder.finalize(
-        datetime(2026, 8, 7, 9, 20)
+        datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            0,
+        )
+    )
+
+    assert candle.start_time == datetime(
+        2026,
+        8,
+        7,
+        9,
+        15,
+        0,
+    )
+
+    assert candle.end_time == datetime(
+        2026,
+        8,
+        7,
+        9,
+        16,
+        0,
     )
 
     levels = level_service.calculate(
@@ -206,15 +275,34 @@ def prepare_trading_day(pipeline):
             8,
             7,
             9,
-            20,
+            16,
             1,
         ),
     )
 
+    # Levels are already calculated, but monitoring must not
+    # begin merely because the reference candle completed.
     session.mark_levels_ready()
 
     assert (
         session.state()
+        is StrategySessionState.LEVELS_READY
+    )
+
+    # Preserve the existing C02 monitoring_start boundary.
+    # The final completed-09:20-candle / ~09:21 activation
+    # correction is handled separately.
+    assert (
+        session.update(
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                20,
+                0,
+            )
+        )
         is StrategySessionState.MONITORING
     )
 

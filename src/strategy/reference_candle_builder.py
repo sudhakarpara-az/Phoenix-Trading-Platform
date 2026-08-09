@@ -17,33 +17,39 @@ class ReferenceCandleBuilder:
     Builds one immutable reference candle from normalized
     MarketTick objects for one configured strategy instrument.
 
-    Rules:
-        - Accept only the configured instrument security ID.
-        - Accept ticks from window_start inclusive.
-        - Accept ticks before window_end.
-        - Ignore ticks outside the reference window.
-        - Ignore ticks from another trading date.
-        - Ignore out-of-order ticks older than the last accepted tick.
-        - Finalize only at or after window_end.
+    Phoenix reference-candle rules:
+
+        - The strategy instrument must be explicitly configured.
+        - The default reference candle starts at 09:15:00.
+        - The default reference candle ends at 09:16:00.
+        - 09:16:00 is excluded from the reference candle.
+        - Only the configured instrument security ID is accepted.
+        - Ticks before the reference window are ignored.
+        - Ticks at or after window_end are ignored.
+        - Ticks from another trading date are ignored.
+        - Out-of-order ticks older than the last accepted tick
+          are ignored.
+        - Finalization is allowed only at or after window_end.
         - Once finalized, the candle cannot be changed.
 
-    The current default time window remains 09:15-09:20 during
-    PRE-M10-C01. The finalized 09:15-09:16 option-candle window
-    will be applied separately in PRE-M10-C02.
+    The 09:15-09:16 reference candle is separate from the later
+    trading-monitor activation boundary.
     """
 
     def __init__(
         self,
-        security_id: str = "13",
-        instrument_symbol: str = "NIFTY 50",
+        security_id: str,
+        instrument_symbol: str,
         window_start: time = time(9, 15),
-        window_end: time = time(9, 20),
+        window_end: time = time(9, 16),
     ) -> None:
         security_id = security_id.strip()
         instrument_symbol = instrument_symbol.strip()
 
         if not security_id:
-            raise ValueError("security_id cannot be empty")
+            raise ValueError(
+                "security_id cannot be empty"
+            )
 
         if not instrument_symbol:
             raise ValueError(
@@ -84,6 +90,14 @@ class ReferenceCandleBuilder:
     @property
     def instrument_symbol(self) -> str:
         return self._instrument_symbol
+
+    @property
+    def window_start(self) -> time:
+        return self._window_start
+
+    @property
+    def window_end(self) -> time:
+        return self._window_end
 
     @property
     def trading_date(self) -> date | None:
@@ -158,8 +172,16 @@ class ReferenceCandleBuilder:
             assert self._high is not None
             assert self._low is not None
 
-            self._high = max(self._high, price)
-            self._low = min(self._low, price)
+            self._high = max(
+                self._high,
+                price,
+            )
+
+            self._low = min(
+                self._low,
+                price,
+            )
+
             self._close = price
 
             self._last_tick_at = tick.timestamp
@@ -183,7 +205,8 @@ class ReferenceCandleBuilder:
 
             if now.time() < self._window_end:
                 raise RuntimeError(
-                    "reference candle cannot be finalized before window_end"
+                    "reference candle cannot be finalized "
+                    "before window_end"
                 )
 
             if self._trading_date is None:
@@ -230,8 +253,12 @@ class ReferenceCandleBuilder:
 
             return self._finalized
 
-    def get_candle(self) -> ReferenceCandle | None:
-        """Return the finalized candle, if available."""
+    def get_candle(
+        self,
+    ) -> ReferenceCandle | None:
+        """
+        Return the finalized candle, if available.
+        """
 
         with self._lock:
             return self._finalized
@@ -240,8 +267,8 @@ class ReferenceCandleBuilder:
         """
         Clear all daily candle state.
 
-        The configured instrument identity and time window remain
-        unchanged so the builder can be reused for a new session.
+        Instrument identity and window configuration remain
+        unchanged so the builder can be reused on another day.
         """
 
         with self._lock:

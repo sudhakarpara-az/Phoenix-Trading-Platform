@@ -21,7 +21,7 @@ def make_reference_candle() -> ReferenceCandle:
         ),
         instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        end_time=datetime(2026, 8, 7, 9, 16),
         open=24500.0,
         high=24530.0,
         low=24480.0,
