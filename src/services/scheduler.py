@@ -26,6 +26,7 @@ from typing import Protocol
 
 from src.market.candle_builder import HistoricalCandle
 from src.market.market_types import MarketTick
+from src.risk.force_exit_coordinator import ForceExitBatch
 from src.option_selection.option_types import (
     OptionSelectionResult,
     OptionSelectionStatus,
@@ -1881,6 +1882,299 @@ class TradingDayEntryGateCoordinator:
         )
 
 
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class ForceExitWindowSchedule:
+    """
+    M10 mandatory intraday force-exit boundary.
+
+    New entries cease at 15:15 inclusive.
+
+    Actual position-exit decisions, reconciliation and SELL
+    execution remain owned by M07/M06.
+    """
+
+    force_exit_time: time = time(
+        15,
+        15,
+    )
+
+
+class ForceExitCoordinatorPort(Protocol):
+    """
+    Narrow M07 force-exit coordination boundary used by M10.
+    """
+
+    @property
+    def force_exit_time(self) -> time:
+        ...
+
+    def evaluate_all(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> ForceExitBatch:
+        ...
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayForceExitResult:
+    """
+    Result of evaluating the M10 15:15 boundary.
+    """
+
+    force_exit_due: bool
+
+    transitioned_to_exit_only: bool
+
+    snapshot: TradingDaySnapshot
+
+    batch: ForceExitBatch | None
+
+    evaluated_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.force_exit_due:
+            if (
+                self.snapshot.state
+                is not TradingDayState.EXIT_ONLY
+            ):
+                raise ValueError(
+                    "due force-exit result requires EXIT_ONLY state"
+                )
+
+            if self.batch is None:
+                raise ValueError(
+                    "due force-exit result requires ForceExitBatch"
+                )
+
+        else:
+            if self.transitioned_to_exit_only:
+                raise ValueError(
+                    "non-due result cannot transition to EXIT_ONLY"
+                )
+
+            if self.batch is not None:
+                raise ValueError(
+                    "non-due result cannot contain ForceExitBatch"
+                )
+
+
+class TradingDayForceExitError(RuntimeError):
+    """
+    M10 could not safely coordinate the mandatory exit boundary.
+    """
+
+
+class TradingDayForceExitCoordinator:
+    """
+    Coordinates the Phoenix 15:15 mandatory exit boundary.
+
+    Processing order is safety-critical:
+
+        1. Validate the scheduler date/time boundary.
+        2. Transition M10 into EXIT_ONLY.
+        3. Only then ask M07 to evaluate all managed positions.
+
+    Therefore, even if M07 force-exit evaluation fails, M10
+    remains EXIT_ONLY and no further new entries are permitted.
+
+    This class deliberately does NOT:
+
+        - build PositionExitDecision objects
+        - cancel existing SELL orders
+        - reconcile broker order state
+        - construct ExitPlan objects
+        - select ExecutionMode
+        - submit broker SELL orders
+
+    Those responsibilities remain with the existing M07/M06
+    services and will be connected by the later M10 integration
+    task.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        force_exit_coordinator:
+            ForceExitCoordinatorPort,
+        schedule: ForceExitWindowSchedule | None = None,
+    ) -> None:
+        self._scheduler = scheduler
+
+        self._force_exit_coordinator = (
+            force_exit_coordinator
+        )
+
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else ForceExitWindowSchedule()
+        )
+
+        if (
+            self._force_exit_coordinator.force_exit_time
+            != self._schedule.force_exit_time
+        ):
+            raise ValueError(
+                "M10 and M07 force-exit times must match"
+            )
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def schedule(self) -> ForceExitWindowSchedule:
+        return self._schedule
+
+    def is_force_exit_due(
+        self,
+        now: datetime,
+    ) -> bool:
+        self._validate_datetime(
+            now
+        )
+
+        self._validate_trading_date(
+            now
+        )
+
+        return (
+            now.time()
+            >= self._schedule.force_exit_time
+        )
+
+    def coordinate(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayForceExitResult:
+        """
+        Enter EXIT_ONLY and obtain M07 force-exit instructions.
+
+        Repeated calls while already EXIT_ONLY are supported.
+        This allows unresolved exposure to continue being
+        evaluated after 15:15 without reopening the entry gate.
+        """
+
+        self._validate_datetime(
+            evaluated_at
+        )
+
+        self._validate_trading_date(
+            evaluated_at
+        )
+
+        if (
+            evaluated_at.time()
+            < self._schedule.force_exit_time
+        ):
+            return TradingDayForceExitResult(
+                force_exit_due=False,
+                transitioned_to_exit_only=False,
+                snapshot=self._scheduler.snapshot,
+                batch=None,
+                evaluated_at=evaluated_at,
+            )
+
+        transitioned = False
+
+        if (
+            self._scheduler.state
+            is not TradingDayState.EXIT_ONLY
+        ):
+            if not self._scheduler.can_transition_to(
+                TradingDayState.EXIT_ONLY
+            ):
+                raise TradingDayForceExitError(
+                    "force-exit boundary requires an active "
+                    "trading-day state or EXIT_ONLY"
+                )
+
+            self._scheduler.transition(
+                target_state=TradingDayState.EXIT_ONLY,
+                transitioned_at=evaluated_at,
+            )
+
+            transitioned = True
+
+        # ----------------------------------------------------
+        # EXIT_ONLY is established BEFORE M07 is invoked.
+        #
+        # A downstream failure therefore cannot reopen BUYs.
+        # ----------------------------------------------------
+
+        try:
+            batch = (
+                self._force_exit_coordinator
+                .evaluate_all(
+                    evaluated_at=evaluated_at,
+                )
+            )
+
+        except Exception as exc:
+            raise TradingDayForceExitError(
+                "M07 force-exit evaluation failed"
+            ) from exc
+
+        if not isinstance(
+            batch,
+            ForceExitBatch,
+        ):
+            raise TradingDayForceExitError(
+                "M07 force-exit coordinator must return "
+                "ForceExitBatch"
+            )
+
+        if not batch.force_exit_time_reached:
+            raise TradingDayForceExitError(
+                "M07 force-exit batch did not confirm "
+                "force-exit time"
+            )
+
+        if batch.evaluated_at != evaluated_at:
+            raise TradingDayForceExitError(
+                "M07 force-exit batch timestamp mismatch"
+            )
+
+        return TradingDayForceExitResult(
+            force_exit_due=True,
+            transitioned_to_exit_only=transitioned,
+            snapshot=self._scheduler.snapshot,
+            batch=batch,
+            evaluated_at=evaluated_at,
+        )
+
+    def _validate_trading_date(
+        self,
+        now: datetime,
+    ) -> None:
+        if (
+            now.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayForceExitError(
+                "force-exit timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "force-exit timestamp must be a datetime"
+            )
+
+
 class HistoricalCandlePort(Protocol):
     """
     Narrow M10 boundary for completed historical one-minute
@@ -2691,11 +2985,16 @@ __all__ = [
     "TradingDayOptionSelectionResult",
     "TradingDayLevelPreparationCoordinator",
     "TradingDayLevelPreparationError",
+    "ForceExitCoordinatorPort",
+    "ForceExitWindowSchedule",
     "RuntimeEntryGatePort",
     "TradingDayEntryGateCoordinator",
     "TradingDayEntryGateDecision",
     "TradingDayEntryGateError",
     "TradingDayEntryGateReason",
+    "TradingDayForceExitCoordinator",
+    "TradingDayForceExitError",
+    "TradingDayForceExitResult",
     "TradingDayLevelPreparationResult",
     "TradingDayMonitoringCoordinator",
     "TradingDayMonitoringError",
