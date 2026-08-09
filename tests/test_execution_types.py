@@ -45,8 +45,8 @@ def make_signal(
         trading_date=TRADING_DATE,
         level=EntryLevel.K5,
         direction=direction,
-        instrument_security_id="12345",
-        instrument_symbol="NIFTY-TEST-OPTION",
+        instrument_security_id="41009",
+        instrument_symbol="NIFTY50-20260811-24450-CE",
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500.0,
@@ -201,6 +201,90 @@ def test_signal_and_option_side_must_match() -> None:
             selected_option=make_selected_option(
                 OptionType.PUT
             ),
+            transaction_type=TransactionType.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=65,
+            limit_price=206.0,
+            execution_mode=ExecutionMode.DRY_RUN,
+            created_at=NOW,
+        )
+
+
+def test_signal_security_id_must_match_selected_option() -> None:
+    signal = make_signal()
+    option = make_selected_option()
+
+    mismatched_signal = TradingSignal(
+        signal_id=signal.signal_id,
+        trading_date=signal.trading_date,
+        level=signal.level,
+        direction=signal.direction,
+        instrument_security_id="99999",
+        instrument_symbol=signal.instrument_symbol,
+        underlying_symbol=signal.underlying_symbol,
+        underlying_security_id=signal.underlying_security_id,
+        underlying_price=signal.underlying_price,
+        level_price=signal.level_price,
+        reason=signal.reason,
+        state=signal.state,
+        generated_at=signal.generated_at,
+        is_reentry=signal.is_reentry,
+        strategy_version=signal.strategy_version,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "signal instrument security ID and selected "
+            "option security ID must match"
+        ),
+    ):
+        OrderIntent(
+            intent_id=OrderIntentId("TEST-SECURITY-MISMATCH"),
+            signal=mismatched_signal,
+            selected_option=option,
+            transaction_type=TransactionType.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=65,
+            limit_price=206.0,
+            execution_mode=ExecutionMode.DRY_RUN,
+            created_at=NOW,
+        )
+
+
+def test_signal_symbol_must_match_selected_option() -> None:
+    signal = make_signal()
+    option = make_selected_option()
+
+    mismatched_signal = TradingSignal(
+        signal_id=signal.signal_id,
+        trading_date=signal.trading_date,
+        level=signal.level,
+        direction=signal.direction,
+        instrument_security_id=signal.instrument_security_id,
+        instrument_symbol="WRONG-OPTION-SYMBOL",
+        underlying_symbol=signal.underlying_symbol,
+        underlying_security_id=signal.underlying_security_id,
+        underlying_price=signal.underlying_price,
+        level_price=signal.level_price,
+        reason=signal.reason,
+        state=signal.state,
+        generated_at=signal.generated_at,
+        is_reentry=signal.is_reentry,
+        strategy_version=signal.strategy_version,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "signal instrument symbol and selected "
+            "option symbol must match"
+        ),
+    ):
+        OrderIntent(
+            intent_id=OrderIntentId("TEST-SYMBOL-MISMATCH"),
+            signal=mismatched_signal,
+            selected_option=option,
             transaction_type=TransactionType.BUY,
             order_type=OrderType.LIMIT,
             quantity=65,

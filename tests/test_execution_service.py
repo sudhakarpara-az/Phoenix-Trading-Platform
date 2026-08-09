@@ -70,8 +70,8 @@ def make_signal() -> TradingSignal:
         trading_date=TRADING_DATE,
         level=EntryLevel.K5,
         direction=SignalDirection.CALL,
-        instrument_security_id="12345",
-        instrument_symbol="NIFTY-TEST-OPTION",
+        instrument_security_id="41009",
+        instrument_symbol="NIFTY50-20260811-24450-CE",
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500,
@@ -85,15 +85,15 @@ def make_signal() -> TradingSignal:
 def make_selected_option(
     *,
     ltp: float = 205.0,
+    security_id: str = "41009",
+    symbol: str = "NIFTY50-20260811-24450-CE",
 ) -> SelectedOption:
     return SelectedOption(
         candidate=OptionCandidate(
             contract=OptionContract(
                 underlying_symbol="NIFTY 50",
-                symbol=(
-                    "NIFTY50-20260811-24450-CE"
-                ),
-                security_id="41009",
+                symbol=symbol,
+                security_id=security_id,
                 option_type=OptionType.CALL,
                 strike=24450,
                 expiry=EXPIRY,
@@ -358,6 +358,113 @@ def test_invalid_quantity_is_rejected_before_intent_creation() -> None:
     assert result.intent is None
     assert broker.submit_count == 0
     assert state_machine.count() == 0
+
+
+def test_contract_security_id_mismatch_is_rejected_before_intent() -> None:
+    service, broker, state_machine = make_service()
+
+    signal = make_signal()
+
+    result = service.execute(
+        signal=signal,
+        selected_option=make_selected_option(
+            security_id="41010",
+            symbol="NIFTY50-20260811-24500-CE",
+        ),
+        quantity=65,
+        execution_mode=ExecutionMode.DRY_RUN,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert result.accepted is False
+    assert result.intent is None
+
+    assert (
+        result.eligibility.reason
+        is OrderEligibilityReason.CONTRACT_MISMATCH
+    )
+
+    assert broker.submit_count == 0
+    assert state_machine.count() == 0
+
+
+def test_contract_symbol_mismatch_is_rejected_before_intent() -> None:
+    service, broker, state_machine = make_service()
+
+    signal = make_signal()
+
+    result = service.execute(
+        signal=signal,
+        selected_option=make_selected_option(
+            security_id="41009",
+            symbol="WRONG-OPTION-SYMBOL",
+        ),
+        quantity=65,
+        execution_mode=ExecutionMode.DRY_RUN,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert result.accepted is False
+    assert result.intent is None
+
+    assert (
+        result.eligibility.reason
+        is OrderEligibilityReason.CONTRACT_MISMATCH
+    )
+
+    assert broker.submit_count == 0
+    assert state_machine.count() == 0
+
+
+def test_contract_mismatch_releases_signal_for_correct_retry() -> None:
+    service, broker, state_machine = make_service()
+
+    signal = make_signal()
+
+    rejected = service.execute(
+        signal=signal,
+        selected_option=make_selected_option(
+            security_id="41010",
+            symbol="NIFTY50-20260811-24500-CE",
+        ),
+        quantity=65,
+        execution_mode=ExecutionMode.DRY_RUN,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert rejected.accepted is False
+    assert (
+        rejected.eligibility.reason
+        is OrderEligibilityReason.CONTRACT_MISMATCH
+    )
+
+    retry = service.execute(
+        signal=signal,
+        selected_option=make_selected_option(),
+        quantity=65,
+        execution_mode=ExecutionMode.DRY_RUN,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert retry.accepted is True
+    assert retry.intent is not None
+
+    assert (
+        retry.intent.selected_option.security_id
+        == signal.instrument_security_id
+    )
+
+    assert (
+        retry.intent.selected_option.symbol
+        == signal.instrument_symbol
+    )
+
+    assert broker.submit_count == 0
+    assert state_machine.count() == 1
 
 
 def test_trading_disabled_rejects_order() -> None:

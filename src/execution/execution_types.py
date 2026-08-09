@@ -122,6 +122,24 @@ class OrderIntent:
                 "signal direction and selected option type must match"
             )
 
+        if (
+            self.signal.instrument_security_id
+            != self.selected_option.security_id
+        ):
+            raise ValueError(
+                "signal instrument security ID and selected "
+                "option security ID must match"
+            )
+
+        if (
+            self.signal.instrument_symbol
+            != self.selected_option.symbol
+        ):
+            raise ValueError(
+                "signal instrument symbol and selected "
+                "option symbol must match"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class BrokerOrderReference:
