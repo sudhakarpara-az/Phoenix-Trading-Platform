@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
@@ -17,12 +18,33 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
 
-def make_candle() -> ReferenceCandle:
+
+def make_candle(
+    trading_date: date = TRADING_DATE,
+    instrument_security_id: str = INSTRUMENT_SECURITY_ID,
+    instrument_symbol: str = INSTRUMENT_SYMBOL,
+) -> ReferenceCandle:
     return ReferenceCandle(
-        trading_date=TRADING_DATE,
-        start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        trading_date=trading_date,
+        instrument_security_id=instrument_security_id,
+        instrument_symbol=instrument_symbol,
+        start_time=datetime(
+            trading_date.year,
+            trading_date.month,
+            trading_date.day,
+            9,
+            15,
+        ),
+        end_time=datetime(
+            trading_date.year,
+            trading_date.month,
+            trading_date.day,
+            9,
+            16,
+        ),
         open=24500.0,
         high=24530.0,
         low=24480.0,
@@ -194,6 +216,30 @@ def test_reference_values_are_preserved() -> None:
     assert levels.t_level == base.t_level
 
 
+def test_instrument_identity_is_preserved() -> None:
+    candle, base, levels = calculate_levels()
+
+    assert (
+        base.instrument_security_id
+        == candle.instrument_security_id
+    )
+
+    assert (
+        base.instrument_symbol
+        == candle.instrument_symbol
+    )
+
+    assert (
+        levels.instrument_security_id
+        == candle.instrument_security_id
+    )
+
+    assert (
+        levels.instrument_symbol
+        == candle.instrument_symbol
+    )
+
+
 def test_formula_version() -> None:
     _, _, levels = calculate_levels()
 
@@ -205,14 +251,8 @@ def test_mismatched_trading_date_is_rejected() -> None:
 
     base = BaseLevelCalculator().calculate(candle)
 
-    different_candle = ReferenceCandle(
+    different_candle = make_candle(
         trading_date=date(2026, 8, 8),
-        start_time=datetime(2026, 8, 8, 9, 15),
-        end_time=datetime(2026, 8, 8, 9, 20),
-        open=24500.0,
-        high=24530.0,
-        low=24480.0,
-        close=24510.0,
     )
 
     with pytest.raises(
@@ -222,4 +262,44 @@ def test_mismatched_trading_date_is_rejected() -> None:
         KSLevelCalculator().calculate(
             candle=different_candle,
             base_levels=base,
+        )
+
+
+def test_mismatched_instrument_security_id_is_rejected() -> None:
+    candle = make_candle()
+
+    base = BaseLevelCalculator().calculate(candle)
+
+    mismatched_base = replace(
+        base,
+        instrument_security_id="67890",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="instrument_security_id must match",
+    ):
+        KSLevelCalculator().calculate(
+            candle=candle,
+            base_levels=mismatched_base,
+        )
+
+
+def test_mismatched_instrument_symbol_is_rejected() -> None:
+    candle = make_candle()
+
+    base = BaseLevelCalculator().calculate(candle)
+
+    mismatched_base = replace(
+        base,
+        instrument_symbol="NIFTY-24750-PE",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="instrument_symbol must match",
+    ):
+        KSLevelCalculator().calculate(
+            candle=candle,
+            base_levels=mismatched_base,
         )

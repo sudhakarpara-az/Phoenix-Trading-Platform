@@ -364,6 +364,12 @@ def make_signal(
         SignalDirection.CALL
     ),
 ) -> TradingSignal:
+    side = (
+        "CE"
+        if direction is SignalDirection.CALL
+        else "PE"
+    )
+
     return TradingSignal(
         signal_id=SignalId(
             signal_id
@@ -371,6 +377,11 @@ def make_signal(
         trading_date=TRADING_DATE,
         level=EntryLevel.K5,
         direction=direction,
+        instrument_security_id="41009",
+        instrument_symbol=(
+            "NIFTY50-20260811-"
+            f"24450-{side}"
+        ),
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500.0,

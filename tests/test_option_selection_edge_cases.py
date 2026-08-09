@@ -111,6 +111,8 @@ def make_signal(
         trading_date=TRADING_DATE,
         level=EntryLevel.K5,
         direction=direction,
+        instrument_security_id="12345",
+        instrument_symbol="NIFTY-TEST-OPTION",
         underlying_symbol=underlying_symbol,
         underlying_security_id="13",
         underlying_price=24500.0,
@@ -599,7 +601,8 @@ def test_malformed_dhan_response_missing_oc_raises() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     request = OptionChainRequest(
@@ -635,7 +638,8 @@ def test_dhan_failure_response_raises() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     request = OptionChainRequest(
@@ -686,7 +690,8 @@ def test_dhan_missing_security_id_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -734,7 +739,8 @@ def test_dhan_missing_delta_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -782,7 +788,8 @@ def test_dhan_zero_ltp_is_skipped() -> None:
             }
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhan()
+        dhan_client=FakeDhan(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(

@@ -1,10 +1,10 @@
-"""
-Thread-safe KS Phoenix entry-level lock manager.
+﻿"""
+Thread-safe KS Phoenix contract + entry-level lock manager.
 
-Prevents multiple active trades from being created
-for the same K5/K6/K7 level.
+Prevents multiple active trades from being created for the same
+selected option contract and K5/K6/K7 level combination.
 
-This module tracks strategy-level lock state only.
+This module tracks strategy lock state only.
 It does not manage broker positions or orders.
 """
 
@@ -18,32 +18,62 @@ from src.strategy.strategy_types import EntryLevel
 
 
 @dataclass(frozen=True, slots=True)
+class LevelLockKey:
+    """
+    Stable identity for one contract-specific entry-level lock.
+    """
+
+    instrument_security_id: str
+    level: EntryLevel
+
+    def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class LevelLock:
     """
-    Represents one active level lock.
+    Represents one active contract-specific level lock.
     """
 
     trading_date: date
+    instrument_security_id: str
     level: EntryLevel
 
     locked_at: datetime
     reference_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
+
 
 class LevelLockManager:
     """
-    Maintains active locks for K5/K6/K7.
+    Maintains active locks by:
+
+        instrument_security_id + EntryLevel
 
     Rules:
-        - One active lock per entry level.
-        - Duplicate lock attempts are rejected.
-        - Unlocking allows future re-entry.
+        - One active lock per contract + entry level.
+        - Same K level on different contracts is independent.
+        - Duplicate lock attempts for the same key are rejected.
+        - Unlocking allows future re-entry for that key.
         - Locks are trading-date aware.
-        - Thread-safe for future concurrent signal processing.
+        - Thread-safe for concurrent signal processing.
     """
 
     def __init__(self) -> None:
-        self._locks: dict[EntryLevel, LevelLock] = {}
+        self._locks: dict[
+            LevelLockKey,
+            LevelLock,
+        ] = {}
+
         self._trading_date: date | None = None
         self._lock = RLock()
 
@@ -54,35 +84,50 @@ class LevelLockManager:
 
     def is_locked(
         self,
+        *,
+        instrument_security_id: str,
         level: EntryLevel,
     ) -> bool:
         """
-        Return True when the entry level currently has
-        an active lock.
+        Return True when the contract + level has an active lock.
         """
 
+        key = self._make_key(
+            instrument_security_id=instrument_security_id,
+            level=level,
+        )
+
         with self._lock:
-            return level in self._locks
+            return key in self._locks
 
     def acquire(
         self,
+        *,
+        instrument_security_id: str,
         level: EntryLevel,
         trading_date: date,
         locked_at: datetime,
         reference_id: str | None = None,
     ) -> bool:
         """
-        Attempt to lock one KS entry level.
+        Attempt to lock one contract + KS entry level.
 
         Returns:
             True  -> lock acquired
-            False -> level was already locked
+            False -> same contract + level already locked
         """
 
-        with self._lock:
-            self._ensure_trading_date(trading_date)
+        key = self._make_key(
+            instrument_security_id=instrument_security_id,
+            level=level,
+        )
 
-            if level in self._locks:
+        with self._lock:
+            self._ensure_trading_date(
+                trading_date
+            )
+
+            if key in self._locks:
                 return False
 
             normalized_reference_id = (
@@ -91,13 +136,19 @@ class LevelLockManager:
                 else None
             )
 
-            if reference_id is not None and not normalized_reference_id:
+            if (
+                reference_id is not None
+                and not normalized_reference_id
+            ):
                 raise ValueError(
                     "reference_id cannot be empty"
                 )
 
-            self._locks[level] = LevelLock(
+            self._locks[key] = LevelLock(
                 trading_date=trading_date,
+                instrument_security_id=(
+                    key.instrument_security_id
+                ),
                 level=level,
                 locked_at=locked_at,
                 reference_id=normalized_reference_id,
@@ -107,47 +158,96 @@ class LevelLockManager:
 
     def release(
         self,
+        *,
+        instrument_security_id: str,
         level: EntryLevel,
     ) -> bool:
         """
-        Release an active level lock.
-
-        Returns:
-            True  -> lock existed and was released
-            False -> level was already unlocked
+        Release one contract-specific level lock.
         """
 
+        key = self._make_key(
+            instrument_security_id=instrument_security_id,
+            level=level,
+        )
+
         with self._lock:
-            return self._locks.pop(level, None) is not None
+            return (
+                self._locks.pop(
+                    key,
+                    None,
+                )
+                is not None
+            )
 
     def get_lock(
         self,
+        *,
+        instrument_security_id: str,
         level: EntryLevel,
     ) -> LevelLock | None:
         """
-        Return the active lock for a level.
+        Return the active lock for one contract + level.
         """
 
+        key = self._make_key(
+            instrument_security_id=instrument_security_id,
+            level=level,
+        )
+
         with self._lock:
-            return self._locks.get(level)
+            return self._locks.get(
+                key
+            )
 
     def active_levels(
         self,
+        *,
+        instrument_security_id: str | None = None,
     ) -> tuple[EntryLevel, ...]:
         """
-        Return all currently locked entry levels.
+        Return locked entry levels.
+
+        When instrument_security_id is supplied, return levels
+        belonging only to that contract.
+
+        Without a contract filter, return the level associated with
+        every active lock. Duplicate level values may therefore appear
+        when different contracts independently own the same K level.
         """
 
+        normalized_security_id = None
+
+        if instrument_security_id is not None:
+            normalized_security_id = (
+                instrument_security_id.strip()
+            )
+
+            if not normalized_security_id:
+                raise ValueError(
+                    "instrument_security_id cannot be empty"
+                )
+
         with self._lock:
-            return tuple(self._locks.keys())
+            return tuple(
+                key.level
+                for key in self._locks
+                if (
+                    normalized_security_id is None
+                    or key.instrument_security_id
+                    == normalized_security_id
+                )
+            )
 
     def count(self) -> int:
         """
-        Return number of active level locks.
+        Return number of active contract + level locks.
         """
 
         with self._lock:
-            return len(self._locks)
+            return len(
+                self._locks
+            )
 
     def clear(self) -> None:
         """
@@ -160,6 +260,19 @@ class LevelLockManager:
             self._locks.clear()
             self._trading_date = None
 
+    @staticmethod
+    def _make_key(
+        *,
+        instrument_security_id: str,
+        level: EntryLevel,
+    ) -> LevelLockKey:
+        return LevelLockKey(
+            instrument_security_id=(
+                instrument_security_id.strip()
+            ),
+            level=level,
+        )
+
     def _ensure_trading_date(
         self,
         trading_date: date,
@@ -167,8 +280,8 @@ class LevelLockManager:
         """
         Initialize or validate the active trading date.
 
-        We deliberately do not auto-clear existing locks
-        if the date changes while locks are active.
+        Existing locks are never silently discarded when the
+        trading date changes.
         """
 
         if self._trading_date is None:

@@ -199,6 +199,64 @@ class ExecutionService:
             )
 
         # --------------------------------------------------
+        # Signal / selected-option contract validation
+        # --------------------------------------------------
+
+        if (
+            signal.direction.value
+            != selected_option.option_type.value
+        ):
+            self._idempotency_guard.release(
+                key=key,
+                changed_at=requested_at,
+            )
+
+            return ExecutionServiceResult(
+                intent=None,
+                pricing=None,
+                eligibility=OrderEligibilityResult(
+                    eligible=False,
+                    reason=(
+                        OrderEligibilityReason
+                        .SIDE_MISMATCH
+                    ),
+                    message=(
+                        "signal direction and selected "
+                        "option type do not match"
+                    ),
+                ),
+                execution_result=None,
+            )
+
+        if (
+            signal.instrument_security_id
+            != selected_option.security_id
+            or signal.instrument_symbol
+            != selected_option.symbol
+        ):
+            self._idempotency_guard.release(
+                key=key,
+                changed_at=requested_at,
+            )
+
+            return ExecutionServiceResult(
+                intent=None,
+                pricing=None,
+                eligibility=OrderEligibilityResult(
+                    eligible=False,
+                    reason=(
+                        OrderEligibilityReason
+                        .CONTRACT_MISMATCH
+                    ),
+                    message=(
+                        "signal contract identity does not "
+                        "match selected option contract"
+                    ),
+                ),
+                execution_result=None,
+            )
+
+        # --------------------------------------------------
         # Quantity pre-validation
         # --------------------------------------------------
 

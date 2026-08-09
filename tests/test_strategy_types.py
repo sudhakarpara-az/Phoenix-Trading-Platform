@@ -17,12 +17,17 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_reference_candle() -> ReferenceCandle:
     return ReferenceCandle(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        end_time=datetime(2026, 8, 7, 9, 16),
         open=24500.0,
         high=24530.0,
         low=24480.0,
@@ -33,6 +38,8 @@ def make_reference_candle() -> ReferenceCandle:
 def make_ks_levels() -> KSLevels:
     return KSLevels(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         high_915=24530.0,
         low_915=24480.0,
         close_915=24510.0,
@@ -55,6 +62,11 @@ def make_ks_levels() -> KSLevels:
 def test_reference_candle_creation() -> None:
     candle = make_reference_candle()
 
+    assert (
+        candle.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+    assert candle.instrument_symbol == INSTRUMENT_SYMBOL
     assert candle.trading_date == TRADING_DATE
     assert candle.open == 24500.0
     assert candle.high == 24530.0
@@ -76,8 +88,10 @@ def test_reference_candle_rejects_high_below_low() -> None:
     ):
         ReferenceCandle(
             trading_date=TRADING_DATE,
+            instrument_security_id=INSTRUMENT_SECURITY_ID,
+            instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 7, 9, 15),
-            end_time=datetime(2026, 8, 7, 9, 20),
+            end_time=datetime(2026, 8, 7, 9, 16),
             open=24500.0,
             high=24470.0,
             low=24480.0,
@@ -92,6 +106,8 @@ def test_reference_candle_rejects_invalid_time() -> None:
     ):
         ReferenceCandle(
             trading_date=TRADING_DATE,
+            instrument_security_id=INSTRUMENT_SECURITY_ID,
+            instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 7, 9, 20),
             end_time=datetime(2026, 8, 7, 9, 15),
             open=24500.0,
@@ -108,8 +124,10 @@ def test_reference_candle_rejects_wrong_date() -> None:
     ):
         ReferenceCandle(
             trading_date=TRADING_DATE,
+            instrument_security_id=INSTRUMENT_SECURITY_ID,
+            instrument_symbol=INSTRUMENT_SYMBOL,
             start_time=datetime(2026, 8, 6, 9, 15),
-            end_time=datetime(2026, 8, 7, 9, 20),
+            end_time=datetime(2026, 8, 7, 9, 16),
             open=24500.0,
             high=24530.0,
             low=24480.0,
@@ -120,6 +138,8 @@ def test_reference_candle_rejects_wrong_date() -> None:
 def test_base_levels_creation() -> None:
     base = KSBaseLevels(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         n1=24555.0,
         n2=24505.0,
         c1=24530.0,
@@ -189,6 +209,8 @@ def test_formula_version_defaults() -> None:
 def test_level_event_creation() -> None:
     event = LevelEvent(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         level=KSLevelName.K5,
         event_type=LevelEventType.TOUCHED,
         level_price=24500.0,
@@ -196,6 +218,11 @@ def test_level_event_creation() -> None:
         timestamp=datetime(2026, 8, 7, 10, 0),
     )
 
+    assert (
+        event.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+    assert event.instrument_symbol == INSTRUMENT_SYMBOL
     assert event.level is KSLevelName.K5
     assert event.event_type is LevelEventType.TOUCHED
     assert event.market_price == 24500.50
@@ -229,3 +256,36 @@ def test_strategy_session_states() -> None:
         StrategySessionState.CLOSED.value
         == "CLOSED"
     )
+def test_reference_candle_rejects_empty_instrument_identity() -> None:
+    with pytest.raises(
+        ValueError,
+        match="instrument_security_id cannot be empty",
+    ):
+        ReferenceCandle(
+            trading_date=TRADING_DATE,
+            instrument_security_id=" ",
+            instrument_symbol=INSTRUMENT_SYMBOL,
+            start_time=datetime(2026, 8, 7, 9, 15),
+            end_time=datetime(2026, 8, 7, 9, 16),
+            open=24500.0,
+            high=24530.0,
+            low=24480.0,
+            close=24510.0,
+        )
+
+
+def test_level_event_rejects_empty_instrument_symbol() -> None:
+    with pytest.raises(
+        ValueError,
+        match="instrument_symbol cannot be empty",
+    ):
+        LevelEvent(
+            trading_date=TRADING_DATE,
+            instrument_security_id=INSTRUMENT_SECURITY_ID,
+            instrument_symbol=" ",
+            level=KSLevelName.K5,
+            event_type=LevelEventType.TOUCHED,
+            level_price=24500.0,
+            market_price=24500.50,
+            timestamp=datetime(2026, 8, 7, 10, 0),
+        )

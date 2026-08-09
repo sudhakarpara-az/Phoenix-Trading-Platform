@@ -1,8 +1,11 @@
-"""
+﻿"""
 Duplicate signal suppression for Phoenix Trading Platform.
 
 Prevents repeated LevelEvent objects from generating
 multiple identical trading signals within a short time window.
+
+Duplicate identity is contract-aware:
+    instrument_security_id + KS level + event type
 
 This module does not manage active positions or level locks.
 """
@@ -23,24 +26,34 @@ from src.strategy.strategy_types import (
 @dataclass(frozen=True, slots=True)
 class SignalFingerprint:
     """
-    Identifies one unique signal candidate.
+    Identifies one unique signal candidate for one contract.
     """
 
+    instrument_security_id: str
     level: KSLevelName
     event_type: LevelEventType
+
+    def __post_init__(self) -> None:
+        if not self.instrument_security_id.strip():
+            raise ValueError(
+                "instrument_security_id cannot be empty"
+            )
 
 
 class DuplicateSignalGuard:
     """
     Suppresses repeated signal candidates within a configured window.
 
-    Example:
-        K5 CROSSED_UP at 10:00:00
-        K5 CROSSED_UP at 10:00:01
-        K5 CROSSED_UP at 10:00:02
+    Events are independent across selected option contracts.
 
-    Only the first event is accepted when the suppression
-    window is 5 seconds.
+    Example:
+        CE contract K5 CROSSED_UP at 10:00:00
+        CE contract K5 CROSSED_UP at 10:00:01
+
+    The second CE event is suppressed inside the configured window.
+
+    A PE contract at K5 is a different fingerprint and is evaluated
+    independently.
     """
 
     def __init__(
@@ -68,12 +81,15 @@ class DuplicateSignalGuard:
         event: LevelEvent,
     ) -> bool:
         """
-        Return True when the event is not a duplicate.
+        Return True when the contract-specific event is not a duplicate.
 
         Accepted events update the fingerprint timestamp.
         """
 
         fingerprint = SignalFingerprint(
+            instrument_security_id=(
+                event.instrument_security_id
+            ),
             level=event.level,
             event_type=event.event_type,
         )
@@ -105,19 +121,43 @@ class DuplicateSignalGuard:
     def clear_level(
         self,
         level: KSLevelName,
+        *,
+        instrument_security_id: str | None = None,
     ) -> None:
         """
         Remove duplicate history for one KS level.
 
-        Useful when the previous trade has fully closed
-        and re-entry should be evaluated fresh.
+        When instrument_security_id is supplied, only that contract
+        and level are cleared.
+
+        Omitting instrument_security_id preserves the legacy
+        session-reset behavior and clears all contracts at the level.
         """
+
+        normalized_security_id = None
+
+        if instrument_security_id is not None:
+            normalized_security_id = (
+                instrument_security_id.strip()
+            )
+
+            if not normalized_security_id:
+                raise ValueError(
+                    "instrument_security_id cannot be empty"
+                )
 
         with self._lock:
             keys = [
                 fingerprint
                 for fingerprint in self._last_seen
-                if fingerprint.level is level
+                if (
+                    fingerprint.level is level
+                    and (
+                        normalized_security_id is None
+                        or fingerprint.instrument_security_id
+                        == normalized_security_id
+                    )
+                )
             ]
 
             for fingerprint in keys:

@@ -1,5 +1,7 @@
 from datetime import date, datetime
 
+import pytest
+
 from src.market.market_types import (
     Exchange,
     MarketTick,
@@ -17,16 +19,21 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_service() -> DailyKSLevelService:
     candle = ReferenceCandle(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
-        open=24500.0,
-        high=24530.0,
-        low=24480.0,
-        close=24510.0,
+        end_time=datetime(2026, 8, 7, 9, 16),
+        open=100.0,
+        high=120.0,
+        low=80.0,
+        close=110.0,
     )
 
     service = DailyKSLevelService()
@@ -50,12 +57,13 @@ def make_tick(
     hour: int = 10,
     minute: int = 0,
     second: int = 0,
-    security_id: str = "13",
+    security_id: str = INSTRUMENT_SECURITY_ID,
+    symbol: str = INSTRUMENT_SYMBOL,
     day: int = 7,
 ) -> MarketTick:
     return MarketTick(
-        exchange=Exchange.IDX,
-        symbol="NIFTY 50",
+        exchange=Exchange.NSE,
+        symbol=symbol,
         security_id=security_id,
         ltp=price,
         volume=0,
@@ -75,24 +83,159 @@ def test_monitor_ignores_tick_when_levels_not_ready() -> None:
     monitor = LevelMonitor(service)
 
     events = monitor.process_tick(
-        make_tick(24500.0)
+        make_tick(100.0)
     )
 
     assert events == ()
 
 
-def test_monitor_ignores_wrong_security_id() -> None:
+def test_monitor_derives_security_id_from_levels() -> None:
+    service = make_service()
+
+    monitor = LevelMonitor(service)
+
+    assert monitor.security_id is None
+
+    levels = service.require_levels()
+
+    events = monitor.process_tick(
+        make_tick(levels.k5)
+    )
+
+    assert len(events) == 1
+
+
+def test_monitor_accepts_matching_explicit_security_id() -> None:
+    service = make_service()
+
+    monitor = LevelMonitor(
+        service,
+        security_id=INSTRUMENT_SECURITY_ID,
+    )
+
+    levels = service.require_levels()
+
+    events = monitor.process_tick(
+        make_tick(levels.k5)
+    )
+
+    assert len(events) == 1
+
+
+def test_monitor_rejects_mismatched_explicit_security_id() -> None:
+    service = make_service()
+
+    monitor = LevelMonitor(
+        service,
+        security_id="999999",
+    )
+
+    levels = service.require_levels()
+
+    events = monitor.process_tick(
+        make_tick(levels.k5)
+    )
+
+    assert events == ()
+
+
+def test_empty_explicit_security_id_is_rejected() -> None:
+    service = make_service()
+
+    with pytest.raises(
+        ValueError,
+        match="security_id cannot be empty",
+    ):
+        LevelMonitor(
+            service,
+            security_id=" ",
+        )
+
+
+def test_monitor_ignores_wrong_tick_security_id() -> None:
     service = make_service()
     monitor = LevelMonitor(service)
 
     events = monitor.process_tick(
         make_tick(
-            price=24500.0,
+            price=100.0,
             security_id="999999",
         )
     )
 
     assert events == ()
+
+
+def test_selected_option_ltp_is_used_as_event_market_price() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    option_ltp = levels.k5
+
+    events = monitor.process_tick(
+        make_tick(
+            price=option_ltp,
+            security_id=INSTRUMENT_SECURITY_ID,
+            symbol=INSTRUMENT_SYMBOL,
+        )
+    )
+
+    assert len(events) == 1
+
+    event = events[0]
+
+    assert (
+        event.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        event.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert event.market_price == option_ltp
+    assert event.level_price == levels.k5
+
+
+def test_nifty_spot_tick_cannot_trigger_selected_option_levels() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    events = monitor.process_tick(
+        make_tick(
+            price=levels.k5,
+            security_id="13",
+            symbol="NIFTY 50",
+        )
+    )
+
+    assert events == ()
+    assert monitor.previous_price is None
+
+
+
+def test_matching_security_id_with_wrong_symbol_is_rejected() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    events = monitor.process_tick(
+        make_tick(
+            price=levels.k5,
+            security_id=INSTRUMENT_SECURITY_ID,
+            symbol="NIFTY-24750-PE",
+        )
+    )
+
+    assert events == ()
+    assert monitor.previous_price is None
+
 
 
 def test_first_tick_on_k5_generates_touch() -> None:
@@ -109,8 +252,26 @@ def test_first_tick_on_k5_generates_touch() -> None:
 
     event = events[0]
 
-    assert event.level.value == EntryLevel.K5.value
-    assert event.event_type is LevelEventType.TOUCHED
+    assert (
+        event.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        event.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert (
+        event.level.value
+        == EntryLevel.K5.value
+    )
+
+    assert (
+        event.event_type
+        is LevelEventType.TOUCHED
+    )
+
     assert event.level_price == levels.k5
 
 
@@ -135,7 +296,12 @@ def test_cross_up_through_k5() -> None:
     )
 
     assert len(events) == 1
-    assert events[0].event_type is LevelEventType.CROSSED_UP
+
+    assert (
+        events[0].event_type
+        is LevelEventType.CROSSED_UP
+    )
+
     assert events[0].level.value == "K5"
 
 
@@ -160,7 +326,12 @@ def test_cross_down_through_k5() -> None:
     )
 
     assert len(events) == 1
-    assert events[0].event_type is LevelEventType.CROSSED_DOWN
+
+    assert (
+        events[0].event_type
+        is LevelEventType.CROSSED_DOWN
+    )
+
     assert events[0].level.value == "K5"
 
 
@@ -191,6 +362,7 @@ def test_cross_up_through_k6() -> None:
     ]
 
     assert len(matching) == 1
+
     assert (
         matching[0].event_type
         is LevelEventType.CROSSED_UP
@@ -224,6 +396,7 @@ def test_cross_down_through_k7() -> None:
     ]
 
     assert len(matching) == 1
+
     assert (
         matching[0].event_type
         is LevelEventType.CROSSED_DOWN
@@ -281,24 +454,23 @@ def test_touch_tolerance() -> None:
     ]
 
     assert len(matching) == 1
-    assert matching[0].event_type is LevelEventType.TOUCHED
+
+    assert (
+        matching[0].event_type
+        is LevelEventType.TOUCHED
+    )
 
 
 def test_negative_tolerance_is_rejected() -> None:
     service = make_service()
 
-    try:
+    with pytest.raises(
+        ValueError,
+        match="touch_tolerance cannot be negative",
+    ):
         LevelMonitor(
             service,
             touch_tolerance=-1.0,
-        )
-
-        assert False, "Expected ValueError"
-
-    except ValueError as exc:
-        assert (
-            str(exc)
-            == "touch_tolerance cannot be negative"
         )
 
 
@@ -308,7 +480,7 @@ def test_monitor_ignores_different_trading_date() -> None:
 
     events = monitor.process_tick(
         make_tick(
-            price=24500.0,
+            price=100.0,
             day=8,
         )
     )
@@ -322,11 +494,11 @@ def test_previous_price_is_updated() -> None:
 
     monitor.process_tick(
         make_tick(
-            price=25000.0,
+            price=1000.0,
         )
     )
 
-    assert monitor.previous_price == 25000.0
+    assert monitor.previous_price == 1000.0
 
 
 def test_reset_clears_monitor_state() -> None:
@@ -335,7 +507,7 @@ def test_reset_clears_monitor_state() -> None:
 
     monitor.process_tick(
         make_tick(
-            price=25000.0,
+            price=1000.0,
         )
     )
 

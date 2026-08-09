@@ -68,7 +68,35 @@ def make_candidate(
 def test_default_preferred_delta() -> None:
     config = ContractRankingConfig()
 
-    assert config.preferred_delta == 0.64
+    assert config.preferred_delta == 0.60
+
+
+def test_default_ranking_prefers_delta_060_over_064() -> None:
+    ranker = ContractRankingPolicy()
+
+    delta_60 = make_candidate(
+        security_id="101",
+        strike=24500,
+        delta=0.60,
+    )
+
+    delta_64 = make_candidate(
+        security_id="102",
+        strike=24600,
+        delta=0.64,
+    )
+
+    ranked = ranker.rank(
+        (
+            delta_64,
+            delta_60,
+        ),
+        reference_price=24550,
+    )
+
+    assert ranked[0].candidate is delta_60
+    assert ranked[0].delta_distance == pytest.approx(0)
+
 
 
 def test_exact_preferred_delta_ranks_first() -> None:
@@ -80,7 +108,7 @@ def test_exact_preferred_delta_ranks_first() -> None:
         delta=0.60,
     )
 
-    preferred = make_candidate(
+    delta_64 = make_candidate(
         security_id="102",
         strike=24600,
         delta=0.64,
@@ -95,13 +123,13 @@ def test_exact_preferred_delta_ranks_first() -> None:
     ranked = ranker.rank(
         (
             first,
-            preferred,
+            delta_64,
             third,
         ),
         reference_price=24550,
     )
 
-    assert ranked[0].candidate is preferred
+    assert ranked[0].candidate is first
     assert ranked[0].rank == 1
 
 
@@ -135,7 +163,7 @@ def test_closest_delta_ranks_first() -> None:
         reference_price=24550,
     )
 
-    assert ranked[0].candidate is delta_63
+    assert ranked[0].candidate is delta_60
 
 
 def test_put_negative_delta_uses_magnitude() -> None:
@@ -158,7 +186,7 @@ def test_put_negative_delta_uses_magnitude() -> None:
             received_at=datetime.now(),
         ),
         greeks=OptionGreeks(
-            delta=-0.64,
+            delta=-0.60,
             calculated_at=datetime.now(),
         ),
     )
@@ -378,7 +406,7 @@ def test_best_returns_best_candidate() -> None:
         delta=0.60,
     )
 
-    best = make_candidate(
+    delta_64 = make_candidate(
         security_id="102",
         strike=24600,
         delta=0.64,
@@ -387,12 +415,12 @@ def test_best_returns_best_candidate() -> None:
     result = ranker.best(
         (
             first,
-            best,
+            delta_64,
         ),
         reference_price=24500,
     )
 
-    assert result is best
+    assert result is first
 
 
 def test_best_empty_input_returns_none() -> None:

@@ -1,15 +1,19 @@
 """
 Phoenix Option Selection Service.
 
-Orchestrates the M04 TradingSignal -> M05 SelectedOption flow.
+Orchestrates Phoenix M05 option-contract selection.
 
 Responsibilities:
-    - Validate supported underlying.
-    - Map SignalDirection to OptionType.
+    - Support signal-independent CALL/PUT selection.
+    - Preserve the existing M04 TradingSignal compatibility path.
+    - Validate the configured supported underlying.
     - Build OptionChainRequest.
     - Obtain normalized snapshot from OptionChainProvider.
     - Invoke OptionSelector.
     - Return OptionSelectionResult.
+
+The signal-independent selection path allows M10 to select
+the morning CALL and PUT contracts before M03/M04 processing.
 
 No broker-specific parsing or order execution belongs here.
 """
@@ -40,6 +44,16 @@ from src.signals.signal_types import (
 class OptionSelectionService:
     """
     Main M05 option-selection orchestrator.
+
+    Phoenix supports two entry points:
+
+        select_for_option_type()
+            Signal-independent selection used by the morning
+            CE/PE preparation flow.
+
+        select_for_signal()
+            Compatibility path for the existing M04 -> M05
+            integration contract.
     """
 
     def __init__(
@@ -67,6 +81,64 @@ class OptionSelectionService:
     def supported_underlying(self) -> str:
         return self._supported_underlying
 
+    def select_for_option_type(
+        self,
+        *,
+        option_type: OptionType,
+        trading_date: date,
+        reference_price: float,
+        requested_at: datetime,
+        requested_expiry: date | None = None,
+    ) -> OptionSelectionResult:
+        """
+        Select one option contract without requiring an M04 signal.
+
+        This is the M05 boundary intended for morning contract
+        preparation before M03/M04:
+
+            CALL -> one independently selected CALL contract
+            PUT  -> one independently selected PUT contract
+
+        The configured supported underlying is used for the
+        provider request. CALL and PUT may therefore be requested
+        independently while sharing the same NIFTY reference price.
+        """
+
+        try:
+            provider_request = OptionChainRequest(
+                underlying_symbol=self._supported_underlying,
+                option_type=option_type,
+                reference_price=reference_price,
+                requested_at=requested_at,
+                expiry=requested_expiry,
+            )
+
+            snapshot = self._provider.get_option_chain(
+                provider_request
+            )
+
+        except Exception as exc:
+            return OptionSelectionResult(
+                status=OptionSelectionStatus.PROVIDER_ERROR,
+                message=(
+                    "Option chain provider failed: "
+                    f"{exc}"
+                ),
+            )
+
+        selector_request = OptionSelectionRequest(
+            option_type=option_type,
+            trading_date=trading_date,
+            reference_price=reference_price,
+            selected_at=requested_at,
+            requested_expiry=requested_expiry,
+        )
+
+        return self._selector.select(
+            snapshot=snapshot,
+            request=selector_request,
+        )
+
     def select_for_signal(
         self,
         signal: TradingSignal,
@@ -75,6 +147,10 @@ class OptionSelectionService:
     ) -> OptionSelectionResult:
         """
         Select one option contract for a TradingSignal.
+
+        This compatibility entry point maps the signal direction
+        to OptionType and then delegates to the signal-independent
+        M05 selection path.
         """
 
         if (
@@ -93,39 +169,12 @@ class OptionSelectionService:
             signal.direction
         )
 
-        provider_request = OptionChainRequest(
-            underlying_symbol=signal.underlying_symbol,
-            option_type=option_type,
-            reference_price=signal.underlying_price,
-            requested_at=requested_at,
-            expiry=requested_expiry,
-        )
-
-        try:
-            snapshot = self._provider.get_option_chain(
-                provider_request
-            )
-
-        except Exception as exc:
-            return OptionSelectionResult(
-                status=OptionSelectionStatus.PROVIDER_ERROR,
-                message=(
-                    "Option chain provider failed: "
-                    f"{exc}"
-                ),
-            )
-
-        selector_request = OptionSelectionRequest(
+        return self.select_for_option_type(
             option_type=option_type,
             trading_date=signal.trading_date,
             reference_price=signal.underlying_price,
-            selected_at=requested_at,
+            requested_at=requested_at,
             requested_expiry=requested_expiry,
-        )
-
-        return self._selector.select(
-            snapshot=snapshot,
-            request=selector_request,
         )
 
     @staticmethod

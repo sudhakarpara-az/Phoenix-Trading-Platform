@@ -20,6 +20,9 @@ class KSLevelCalculator:
     """
     Calculates the complete KS Phoenix level set.
 
+    The calculated level set belongs to the same strategy
+    instrument as the reference candle and base levels.
+
     Pine logic:
 
         ks0_calculated_value = n2 * 0.118 / 0.5
@@ -55,11 +58,32 @@ class KSLevelCalculator:
     ) -> KSLevels:
         """
         Calculate the complete KS level set.
+
+        The reference candle and base levels must belong
+        to the same trading date and strategy instrument.
         """
 
         if candle.trading_date != base_levels.trading_date:
             raise ValueError(
                 "candle and base_levels trading_date must match"
+            )
+
+        if (
+            candle.instrument_security_id
+            != base_levels.instrument_security_id
+        ):
+            raise ValueError(
+                "candle and base_levels "
+                "instrument_security_id must match"
+            )
+
+        if (
+            candle.instrument_symbol
+            != base_levels.instrument_symbol
+        ):
+            raise ValueError(
+                "candle and base_levels "
+                "instrument_symbol must match"
             )
 
         n1 = base_levels.n1
@@ -112,6 +136,10 @@ class KSLevelCalculator:
 
         return KSLevels(
             trading_date=candle.trading_date,
+            instrument_security_id=(
+                candle.instrument_security_id
+            ),
+            instrument_symbol=candle.instrument_symbol,
 
             high_915=candle.high,
             low_915=candle.low,

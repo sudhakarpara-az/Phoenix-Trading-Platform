@@ -103,6 +103,12 @@ class SignalBuilder:
             trading_date=request.event.trading_date,
             level=entry_level,
             direction=request.direction,
+            instrument_security_id=(
+                request.event.instrument_security_id
+            ),
+            instrument_symbol=(
+                request.event.instrument_symbol
+            ),
             underlying_symbol=request.underlying_symbol,
             underlying_security_id=(
                 request.underlying_security_id
@@ -125,7 +131,7 @@ class SignalBuilder:
         Generate one deterministic session-local signal ID.
 
         Format:
-            SIG-YYYYMMDD-K5-000001
+            SIG-YYYYMMDD-SECURITYID-K5-000001
         """
 
         with self._lock:
@@ -138,6 +144,7 @@ class SignalBuilder:
         return (
             f"SIG-"
             f"{trading_date}-"
+            f"{event.instrument_security_id}-"
             f"{entry_level.value}-"
             f"{sequence:06d}"
         )

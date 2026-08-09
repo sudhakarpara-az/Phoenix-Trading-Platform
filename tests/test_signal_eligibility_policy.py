@@ -18,6 +18,9 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_event(
     level: KSLevelName = KSLevelName.K5,
@@ -31,6 +34,10 @@ def make_event(
             8,
             day,
         ),
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=INSTRUMENT_SYMBOL,
         level=level,
         event_type=LevelEventType.CROSSED_UP,
         level_price=24500.0,

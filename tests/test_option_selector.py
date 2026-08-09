@@ -380,7 +380,7 @@ def test_out_of_range_delta_is_rejected() -> None:
     )
 
 
-def test_candidate_closest_to_064_is_selected() -> None:
+def test_candidate_closest_to_060_is_selected() -> None:
     selector = make_selector()
 
     delta_60 = make_candidate(
@@ -429,12 +429,12 @@ def test_candidate_closest_to_064_is_selected() -> None:
 
     assert (
         result.selected_option.security_id
-        == "103"
+        == "101"
     )
 
     assert (
         result.selected_option.delta
-        == 0.64
+        == 0.60
     )
 
 
@@ -471,17 +471,17 @@ def test_put_delta_ranking_uses_absolute_value() -> None:
 
     assert (
         result.selected_option.security_id
-        == "202"
+        == "201"
     )
 
     assert (
         result.selected_option.delta
-        == -0.64
+        == -0.60
     )
 
     assert (
         result.selected_option.delta_magnitude
-        == 0.64
+        == 0.60
     )
 
 
@@ -581,7 +581,7 @@ def test_selected_option_preserves_ltp() -> None:
     )
 
 
-def test_selected_delta_target_is_064() -> None:
+def test_selected_delta_target_is_060() -> None:
     selector = make_selector()
 
     candidate = make_candidate(
@@ -604,7 +604,7 @@ def test_selected_delta_target_is_064() -> None:
 
     assert (
         result.selected_option.selection_delta_target
-        == 0.64
+        == 0.60
     )
 
 

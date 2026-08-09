@@ -155,7 +155,10 @@ class SignalEngine:
             )
 
             if self._level_locks.is_locked(
-                entry_level
+                instrument_security_id=(
+                    event.instrument_security_id
+                ),
+                level=entry_level,
             ):
                 return SignalEngineResult(
                     accepted=False,
@@ -163,7 +166,10 @@ class SignalEngine:
                 )
 
             if not self._reentry_manager.can_enter(
-                entry_level
+                instrument_security_id=(
+                    event.instrument_security_id
+                ),
+                level=entry_level,
             ):
                 return SignalEngineResult(
                     accepted=False,
@@ -172,7 +178,10 @@ class SignalEngine:
 
             is_reentry = (
                 self._reentry_manager.is_reentry(
-                    entry_level
+                    instrument_security_id=(
+                        event.instrument_security_id
+                    ),
+                    level=entry_level,
                 )
             )
 
@@ -191,6 +200,9 @@ class SignalEngine:
             )
 
             acquired = self._level_locks.acquire(
+                instrument_security_id=(
+                    event.instrument_security_id
+                ),
                 level=entry_level,
                 trading_date=event.trading_date,
                 locked_at=event.timestamp,
@@ -222,6 +234,9 @@ class SignalEngine:
 
         with self._lock:
             self._reentry_manager.mark_open(
+                instrument_security_id=(
+                    signal.instrument_security_id
+                ),
                 level=signal.level,
                 trading_date=signal.trading_date,
                 opened_at=signal.generated_at,
@@ -229,31 +244,40 @@ class SignalEngine:
 
     def mark_trade_closed(
         self,
+        *,
+        instrument_security_id: str,
         level: EntryLevel,
         closed_at,
     ) -> None:
         """
-        Mark a level trade closed and make the level
-        eligible for future re-entry.
+        Mark one contract + level trade closed and make only that
+        contract + level eligible for future re-entry.
         """
 
         with self._lock:
             self._reentry_manager.mark_closed(
+                instrument_security_id=(
+                    instrument_security_id
+                ),
                 level=level,
                 closed_at=closed_at,
             )
 
-            self._level_locks.release(level)
+            self._level_locks.release(
+                instrument_security_id=(
+                    instrument_security_id
+                ),
+                level=level,
+            )
 
-            from src.strategy.strategy_types import (
-    EntryLevel,
-    KSLevelName,
-    LevelEvent,
-)
+            from src.strategy.strategy_types import KSLevelName
 
             self._duplicate_guard.clear_level(
-    KSLevelName(level.value)
-)
+                KSLevelName(level.value),
+                instrument_security_id=(
+                    instrument_security_id
+                ),
+            )
 
     def release_signal_lock(
         self,
@@ -266,7 +290,10 @@ class SignalEngine:
 
         with self._lock:
             return self._level_locks.release(
-                signal.level
+                instrument_security_id=(
+                    signal.instrument_security_id
+                ),
+                level=signal.level,
             )
 
     @staticmethod

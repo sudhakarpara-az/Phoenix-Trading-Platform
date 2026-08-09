@@ -1,9 +1,9 @@
 """
 Live KS Phoenix K5/K6/K7 level monitor.
 
-Consumes normalized NIFTY MarketTick objects and emits
-broker-independent LevelEvent objects when the underlying
-touches or crosses an entry level.
+Consumes normalized MarketTick objects for one strategy
+instrument and emits broker-independent LevelEvent objects
+when that instrument touches or crosses an entry level.
 
 No order, option-selection, position, or broker logic
 belongs in this module.
@@ -15,7 +15,9 @@ from datetime import date
 from threading import RLock
 
 from src.market.market_types import MarketTick
-from src.strategy.daily_ks_level_service import DailyKSLevelService
+from src.strategy.daily_ks_level_service import (
+    DailyKSLevelService,
+)
 from src.strategy.strategy_types import (
     EntryLevel,
     KSLevelName,
@@ -26,7 +28,7 @@ from src.strategy.strategy_types import (
 
 class LevelMonitor:
     """
-    Monitors live NIFTY price against K5, K6, and K7.
+    Monitors one strategy instrument against K5, K6, and K7.
 
     Event rules:
 
@@ -39,19 +41,28 @@ class LevelMonitor:
         current == level without a directional cross
             -> TOUCHED
 
-    The monitor evaluates only the configured NIFTY security ID.
+    Instrument identity is taken from the KS level set.
+
+    An optional security_id may still be supplied for backward
+    compatibility. When omitted, the monitor automatically uses
+    the instrument security ID stored in KSLevels.
     """
 
     def __init__(
         self,
         level_service: DailyKSLevelService,
-        security_id: str = "13",
+        security_id: str | None = None,
         touch_tolerance: float = 0.0,
     ) -> None:
-        normalized_security_id = security_id.strip()
+        normalized_security_id: str | None = None
 
-        if not normalized_security_id:
-            raise ValueError("security_id cannot be empty")
+        if security_id is not None:
+            normalized_security_id = security_id.strip()
+
+            if not normalized_security_id:
+                raise ValueError(
+                    "security_id cannot be empty"
+                )
 
         if touch_tolerance < 0:
             raise ValueError(
@@ -77,23 +88,51 @@ class LevelMonitor:
         with self._lock:
             return self._trading_date
 
+    @property
+    def security_id(self) -> str | None:
+        """
+        Return an explicitly configured security ID.
+
+        None means the monitor derives the instrument identity
+        from the current KSLevels object.
+        """
+
+        return self._security_id
+
     def process_tick(
         self,
         tick: MarketTick,
     ) -> tuple[LevelEvent, ...]:
         """
-        Process one live NIFTY tick.
+        Process one live strategy-instrument tick.
 
         Returns zero or more LevelEvent objects.
         """
 
         with self._lock:
-            if tick.security_id != self._security_id:
-                return ()
-
             levels = self._level_service.get_levels()
 
             if levels is None:
+                return ()
+
+            expected_security_id = (
+                self._security_id
+                or levels.instrument_security_id
+            )
+
+            # Fail closed if an explicitly configured monitor
+            # does not belong to the instrument that owns the
+            # KS level set.
+            if (
+                expected_security_id
+                != levels.instrument_security_id
+            ):
+                return ()
+
+            if tick.security_id != expected_security_id:
+                return ()
+
+            if tick.symbol != levels.instrument_symbol:
                 return ()
 
             tick_date = tick.timestamp.date()
@@ -115,10 +154,14 @@ class LevelMonitor:
                 EntryLevel.K6,
                 EntryLevel.K7,
             ):
-                level_name = KSLevelName(entry_level.value)
+                level_name = KSLevelName(
+                    entry_level.value
+                )
 
-                level_price = levels.entry_level_price(
-                    entry_level
+                level_price = (
+                    levels.entry_level_price(
+                        entry_level
+                    )
                 )
 
                 event_type = self._detect_event(
@@ -133,6 +176,12 @@ class LevelMonitor:
                 events.append(
                     LevelEvent(
                         trading_date=tick_date,
+                        instrument_security_id=(
+                            levels.instrument_security_id
+                        ),
+                        instrument_symbol=(
+                            levels.instrument_symbol
+                        ),
                         level=level_name,
                         event_type=event_type,
                         level_price=level_price,
@@ -170,7 +219,11 @@ class LevelMonitor:
         upper_bound = level_price + tolerance
 
         if previous_price is None:
-            if lower_bound <= current_price <= upper_bound:
+            if (
+                lower_bound
+                <= current_price
+                <= upper_bound
+            ):
                 return LevelEventType.TOUCHED
 
             return None
@@ -187,7 +240,11 @@ class LevelMonitor:
         ):
             return LevelEventType.CROSSED_DOWN
 
-        if lower_bound <= current_price <= upper_bound:
+        if (
+            lower_bound
+            <= current_price
+            <= upper_bound
+        ):
             return LevelEventType.TOUCHED
 
         return None

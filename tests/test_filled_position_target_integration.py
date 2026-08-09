@@ -83,6 +83,17 @@ def make_signal(
     direction: SignalDirection = SignalDirection.CALL,
     level: EntryLevel = EntryLevel.K5,
 ) -> TradingSignal:
+    if direction is SignalDirection.CALL:
+        instrument_security_id = "41009"
+        instrument_symbol = (
+            "NIFTY50-20260811-24450-CE"
+        )
+    else:
+        instrument_security_id = "41019"
+        instrument_symbol = (
+            "NIFTY50-20260811-24650-PE"
+        )
+
     return TradingSignal(
         signal_id=SignalId(
             signal_id
@@ -90,6 +101,10 @@ def make_signal(
         trading_date=TRADING_DATE,
         level=level,
         direction=direction,
+        instrument_security_id=(
+            instrument_security_id
+        ),
+        instrument_symbol=instrument_symbol,
         underlying_symbol="NIFTY 50",
         underlying_security_id="13",
         underlying_price=24500.0,

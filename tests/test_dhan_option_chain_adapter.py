@@ -141,7 +141,8 @@ def make_request(
 
 def test_provider_name() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     assert adapter.provider_name == "DHAN"
@@ -149,7 +150,8 @@ def test_provider_name() -> None:
 
 def test_call_option_is_normalized() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -179,7 +181,8 @@ def test_call_option_is_normalized() -> None:
 
 def test_put_option_is_normalized() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -204,7 +207,8 @@ def test_put_option_is_normalized() -> None:
 
 def test_snapshot_uses_dhan_underlying_ltp() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -222,7 +226,8 @@ def test_snapshot_falls_back_to_request_price() -> None:
     adapter = DhanOptionChainAdapter(
         dhan_client=FakeDhanClient(
             chain_response=response
-        )
+        ),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -234,7 +239,8 @@ def test_snapshot_falls_back_to_request_price() -> None:
 
 def test_bid_ask_volume_and_oi_are_normalized() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     candidate = adapter.get_option_chain(
@@ -249,7 +255,8 @@ def test_bid_ask_volume_and_oi_are_normalized() -> None:
 
 def test_greeks_are_normalized() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     greeks = adapter.get_option_chain(
@@ -267,7 +274,8 @@ def test_expiry_is_resolved_when_request_has_none() -> None:
     client = FakeDhanClient()
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=client
+        dhan_client=client,
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -302,7 +310,8 @@ def test_expired_expiry_is_ignored_when_resolving() -> None:
     )
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=client
+        dhan_client=client,
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -328,7 +337,8 @@ def test_missing_delta_skips_contract() -> None:
     adapter = DhanOptionChainAdapter(
         dhan_client=FakeDhanClient(
             chain_response=response
-        )
+        ),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -348,7 +358,8 @@ def test_zero_ltp_skips_contract() -> None:
     adapter = DhanOptionChainAdapter(
         dhan_client=FakeDhanClient(
             chain_response=response
-        )
+        ),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -368,7 +379,8 @@ def test_missing_security_id_skips_contract() -> None:
     adapter = DhanOptionChainAdapter(
         dhan_client=FakeDhanClient(
             chain_response=response
-        )
+        ),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -386,7 +398,8 @@ def test_failed_dhan_response_raises() -> None:
                 "remarks": "test failure",
                 "data": "",
             }
-        )
+        ),
+        lot_size=65,
     )
 
     with pytest.raises(
@@ -407,7 +420,8 @@ def test_missing_chain_data_raises() -> None:
                     "last_price": 24500,
                 },
             }
-        )
+        ),
+        lot_size=65,
     )
 
     with pytest.raises(
@@ -429,7 +443,8 @@ def test_no_valid_expiry_raises() -> None:
                     "2026-08-06",
                 ],
             }
-        )
+        ),
+        lot_size=65,
     )
 
     with pytest.raises(
@@ -445,7 +460,8 @@ def test_no_valid_expiry_raises() -> None:
 
 def test_canonical_symbol_is_built() -> None:
     adapter = DhanOptionChainAdapter(
-        dhan_client=FakeDhanClient()
+        dhan_client=FakeDhanClient(),
+        lot_size=65,
     )
 
     candidate = adapter.get_option_chain(
@@ -469,6 +485,40 @@ def test_custom_lot_size_is_preserved() -> None:
     ).candidates[0]
 
     assert candidate.contract.lot_size == 130
+
+
+def test_missing_lot_size_fails_closed() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "lot_size must be explicitly configured"
+        ),
+    ):
+        DhanOptionChainAdapter(
+            dhan_client=FakeDhanClient()
+        )
+
+
+@pytest.mark.parametrize(
+    "lot_size",
+    [
+        True,
+        False,
+        65.0,
+        "65",
+    ],
+)
+def test_non_integer_lot_size_is_rejected(
+    lot_size,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="lot_size must be an integer",
+    ):
+        DhanOptionChainAdapter(
+            dhan_client=FakeDhanClient(),
+            lot_size=lot_size,
+        )
 
 
 def test_invalid_lot_size_is_rejected() -> None:
@@ -495,7 +545,8 @@ def test_nested_sdk_option_chain_response_is_supported() -> None:
     adapter = DhanOptionChainAdapter(
         dhan_client=FakeDhanClient(
             chain_response=nested_response
-        )
+        ),
+        lot_size=65,
     )
 
     snapshot = adapter.get_option_chain(
@@ -527,7 +578,8 @@ def test_nested_sdk_expiry_response_is_supported() -> None:
     )
 
     adapter = DhanOptionChainAdapter(
-        dhan_client=client
+        dhan_client=client,
+        lot_size=65,
     )
 
     expiry = adapter._resolve_nearest_expiry(

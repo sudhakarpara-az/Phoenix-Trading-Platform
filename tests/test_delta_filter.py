@@ -65,7 +65,7 @@ def test_default_configuration() -> None:
 
     assert config.minimum_delta == 0.59
     assert config.maximum_delta == 0.69
-    assert config.preferred_delta == 0.64
+    assert config.preferred_delta == 0.60
 
 
 def test_call_at_lower_boundary_is_eligible() -> None:
@@ -99,7 +99,7 @@ def test_call_preferred_delta_is_eligible() -> None:
 
     candidate = make_candidate(
         security_id="101",
-        delta=0.64,
+        delta=0.60,
     )
 
     assert delta_filter.is_eligible(
@@ -166,7 +166,7 @@ def test_put_preferred_delta_is_eligible() -> None:
 
     candidate = make_candidate(
         security_id="201",
-        delta=-0.64,
+        delta=-0.60,
         option_type=OptionType.PUT,
     )
 
@@ -218,7 +218,7 @@ def test_filter_returns_only_eligible_candidates() -> None:
 
     preferred = make_candidate(
         security_id="103",
-        delta=0.64,
+        delta=0.60,
     )
 
     upper = make_candidate(

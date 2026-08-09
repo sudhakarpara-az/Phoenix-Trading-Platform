@@ -79,6 +79,7 @@ def build_strategy_pipeline():
 
     candle_builder = ReferenceCandleBuilder(
         security_id="13",
+        instrument_symbol="NIFTY 50",
     )
 
     level_service = DailyKSLevelService()
@@ -101,25 +102,52 @@ def build_reference_candle(
     candle_builder: ReferenceCandleBuilder,
 ):
     """
-    Simulate the NIFTY 09:15–09:20 reference period.
+    Build the completed 09:15-09:16 reference candle.
+
+    The reference candle is finalized at 09:16. The session is
+    then advanced separately to the existing monitoring_start
+    boundary so downstream integration behavior remains explicit.
     """
 
-    # 09:15
     assert (
         session.update(
-            datetime(2026, 8, 7, 9, 15)
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                15,
+                0,
+            )
         )
         is StrategySessionState.BUILDING_REFERENCE_CANDLE
     )
 
     ticks = [
-        make_tick(24500.0, 9, 15, 0),
-        make_tick(24510.0, 9, 15, 30),
-        make_tick(24520.0, 9, 16, 0),
-        make_tick(24530.0, 9, 17, 0),
-        make_tick(24490.0, 9, 18, 0),
-        make_tick(24480.0, 9, 19, 0),
-        make_tick(24510.0, 9, 19, 59),
+        make_tick(
+            24500.0,
+            9,
+            15,
+            0,
+        ),
+        make_tick(
+            24530.0,
+            9,
+            15,
+            20,
+        ),
+        make_tick(
+            24480.0,
+            9,
+            15,
+            40,
+        ),
+        make_tick(
+            24510.0,
+            9,
+            15,
+            59,
+        ),
     ]
 
     for market_tick in ticks:
@@ -129,16 +157,64 @@ def build_reference_candle(
 
         assert accepted is True
 
-    # At exactly 09:20 the building period is over.
+    # 09:16 closes the completed 09:15 one-minute candle.
     assert (
         session.update(
-            datetime(2026, 8, 7, 9, 20)
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                16,
+                0,
+            )
         )
         is StrategySessionState.LEVELS_READY
     )
 
     candle = candle_builder.finalize(
-        datetime(2026, 8, 7, 9, 20)
+        datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            0,
+        )
+    )
+
+    assert candle.start_time == datetime(
+        2026,
+        8,
+        7,
+        9,
+        15,
+        0,
+    )
+
+    assert candle.end_time == datetime(
+        2026,
+        8,
+        7,
+        9,
+        16,
+        0,
+    )
+
+    # Advance the session clock separately. Levels have not yet
+    # been marked ready, so the state must remain LEVELS_READY.
+    assert (
+        session.update(
+            datetime(
+                2026,
+                8,
+                7,
+                9,
+                20,
+                0,
+            )
+        )
+        is StrategySessionState.LEVELS_READY
     )
 
     return candle
@@ -164,7 +240,7 @@ def test_complete_reference_candle_pipeline() -> None:
     assert candle.low == 24480.0
     assert candle.close == 24510.0
 
-    assert candle_builder.tick_count == 7
+    assert candle_builder.tick_count == 4
     assert candle_builder.is_finalized is True
 
 

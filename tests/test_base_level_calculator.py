@@ -8,6 +8,9 @@ from src.strategy.strategy_types import ReferenceCandle
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_candle(
     high: float = 24530.0,
@@ -17,8 +20,10 @@ def make_candle(
 ) -> ReferenceCandle:
     return ReferenceCandle(
         trading_date=TRADING_DATE,
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
         start_time=datetime(2026, 8, 7, 9, 15),
-        end_time=datetime(2026, 8, 7, 9, 20),
+        end_time=datetime(2026, 8, 7, 9, 16),
         open=open_price,
         high=high,
         low=low,
@@ -114,6 +119,24 @@ def test_trading_date_is_preserved() -> None:
     )
 
     assert levels.trading_date == TRADING_DATE
+
+
+def test_instrument_identity_is_preserved() -> None:
+    calculator = BaseLevelCalculator()
+
+    levels = calculator.calculate(
+        make_candle()
+    )
+
+    assert (
+        levels.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        levels.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
 
 
 def test_close_price_does_not_change_base_formula() -> None:

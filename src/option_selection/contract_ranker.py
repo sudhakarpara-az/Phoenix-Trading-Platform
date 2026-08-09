@@ -27,7 +27,7 @@ class ContractRankingConfig:
     Ranking configuration for eligible option contracts.
     """
 
-    preferred_delta: float = 0.64
+    preferred_delta: float = 0.60
 
     def __post_init__(self) -> None:
         if not isfinite(self.preferred_delta):

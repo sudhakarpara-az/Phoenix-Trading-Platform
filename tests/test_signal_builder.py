@@ -21,6 +21,9 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
 
 def make_event(
     level: KSLevelName = KSLevelName.K5,
@@ -40,6 +43,10 @@ def make_event(
 
     return LevelEvent(
         trading_date=TRADING_DATE,
+        instrument_security_id=(
+            INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=INSTRUMENT_SYMBOL,
         level=level,
         event_type=event_type,
         level_price=price,
@@ -147,6 +154,41 @@ def test_reentry_overrides_reason() -> None:
     assert signal.is_reentry is True
 
 
+def test_signal_preserves_strategy_instrument_identity() -> None:
+    builder = SignalBuilder()
+
+    event = make_event()
+
+    signal = builder.build(
+        make_request(
+            event=event,
+        )
+    )
+
+    assert (
+        signal.instrument_security_id
+        == event.instrument_security_id
+    )
+
+    assert (
+        signal.instrument_symbol
+        == event.instrument_symbol
+    )
+
+
+def test_signal_id_includes_strategy_instrument_security_id() -> None:
+    builder = SignalBuilder()
+
+    signal = builder.build(
+        make_request()
+    )
+
+    assert (
+        signal.signal_id.value
+        == "SIG-20260807-12345-K5-000001"
+    )
+
+
 def test_signal_preserves_underlying_data() -> None:
     builder = SignalBuilder()
 
@@ -198,7 +240,7 @@ def test_signal_id_format() -> None:
 
     assert (
         signal.signal_id.value
-        == "SIG-20260807-K5-000001"
+        == "SIG-20260807-12345-K5-000001"
     )
 
 
@@ -223,12 +265,12 @@ def test_signal_ids_increment() -> None:
 
     assert (
         first.signal_id.value
-        == "SIG-20260807-K5-000001"
+        == "SIG-20260807-12345-K5-000001"
     )
 
     assert (
         second.signal_id.value
-        == "SIG-20260807-K6-000002"
+        == "SIG-20260807-12345-K6-000002"
     )
 
 

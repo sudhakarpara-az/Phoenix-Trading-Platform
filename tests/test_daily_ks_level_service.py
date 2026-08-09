@@ -2,7 +2,9 @@ from datetime import date, datetime
 
 import pytest
 
-from src.strategy.daily_ks_level_service import DailyKSLevelService
+from src.strategy.daily_ks_level_service import (
+    DailyKSLevelService,
+)
 from src.strategy.strategy_types import (
     EntryLevel,
     KSLevelName,
@@ -12,12 +14,22 @@ from src.strategy.strategy_types import (
 
 TRADING_DATE = date(2026, 8, 7)
 
+INSTRUMENT_SECURITY_ID = "12345"
+INSTRUMENT_SYMBOL = "NIFTY-24550-CE"
+
+OTHER_INSTRUMENT_SECURITY_ID = "67890"
+OTHER_INSTRUMENT_SYMBOL = "NIFTY-24750-PE"
+
 
 def make_candle(
     trading_date: date = TRADING_DATE,
+    instrument_security_id: str = INSTRUMENT_SECURITY_ID,
+    instrument_symbol: str = INSTRUMENT_SYMBOL,
 ) -> ReferenceCandle:
     return ReferenceCandle(
         trading_date=trading_date,
+        instrument_security_id=instrument_security_id,
+        instrument_symbol=instrument_symbol,
         start_time=datetime(
             trading_date.year,
             trading_date.month,
@@ -30,7 +42,7 @@ def make_candle(
             trading_date.month,
             trading_date.day,
             9,
-            20,
+            16,
         ),
         open=24500.0,
         high=24530.0,
@@ -65,6 +77,24 @@ def test_calculate_creates_daily_levels() -> None:
     assert service.is_ready is True
     assert service.get_levels() is levels
     assert service.trading_date == TRADING_DATE
+
+
+def test_calculation_preserves_instrument_identity() -> None:
+    service = DailyKSLevelService()
+
+    candle = make_candle()
+
+    levels = service.calculate(candle)
+
+    assert (
+        levels.instrument_security_id
+        == candle.instrument_security_id
+    )
+
+    assert (
+        levels.instrument_symbol
+        == candle.instrument_symbol
+    )
 
 
 def test_calculation_preserves_reference_candle_values() -> None:
@@ -154,6 +184,154 @@ def test_repeated_calculation_same_day_returns_same_object() -> None:
     assert first is second
 
 
+def test_separate_services_own_ce_and_pe_levels_independently() -> None:
+    ce_service = DailyKSLevelService()
+    pe_service = DailyKSLevelService()
+
+    ce_candle = make_candle(
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
+    )
+
+    pe_candle = ReferenceCandle(
+        trading_date=TRADING_DATE,
+        instrument_security_id=(
+            OTHER_INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=(
+            OTHER_INSTRUMENT_SYMBOL
+        ),
+        start_time=datetime(
+            2026,
+            8,
+            7,
+            9,
+            15,
+        ),
+        end_time=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+        ),
+        open=210.0,
+        high=225.0,
+        low=195.0,
+        close=218.0,
+    )
+
+    ce_levels = ce_service.calculate(
+        ce_candle,
+        calculated_at=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            1,
+        ),
+    )
+
+    pe_levels = pe_service.calculate(
+        pe_candle,
+        calculated_at=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            1,
+        ),
+    )
+
+    assert ce_service.is_ready is True
+    assert pe_service.is_ready is True
+
+    assert ce_service.trading_date == TRADING_DATE
+    assert pe_service.trading_date == TRADING_DATE
+
+    assert ce_service.get_levels() is ce_levels
+    assert pe_service.get_levels() is pe_levels
+
+    assert (
+        ce_levels.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        ce_levels.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert (
+        pe_levels.instrument_security_id
+        == OTHER_INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        pe_levels.instrument_symbol
+        == OTHER_INSTRUMENT_SYMBOL
+    )
+
+    assert ce_levels is not pe_levels
+
+    assert ce_levels.k5 != pe_levels.k5
+    assert ce_levels.k6 != pe_levels.k6
+    assert ce_levels.k7 != pe_levels.k7
+
+    assert (
+        ce_service.require_levels()
+        is ce_levels
+    )
+
+    assert (
+        pe_service.require_levels()
+        is pe_levels
+    )
+
+
+
+def test_same_day_different_security_id_requires_reset() -> None:
+    service = DailyKSLevelService()
+
+    service.calculate(
+        make_candle()
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="another instrument",
+    ):
+        service.calculate(
+            make_candle(
+                instrument_security_id=(
+                    OTHER_INSTRUMENT_SECURITY_ID
+                ),
+            )
+        )
+
+
+def test_same_day_different_symbol_requires_reset() -> None:
+    service = DailyKSLevelService()
+
+    service.calculate(
+        make_candle()
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="another instrument",
+    ):
+        service.calculate(
+            make_candle(
+                instrument_symbol=(
+                    OTHER_INSTRUMENT_SYMBOL
+                ),
+            )
+        )
+
+
 def test_different_day_requires_reset() -> None:
     service = DailyKSLevelService()
 
@@ -229,4 +407,47 @@ def test_reset_allows_next_day_calculation() -> None:
 
     assert first.trading_date == date(2026, 8, 7)
     assert second.trading_date == date(2026, 8, 8)
+    assert first is not second
+
+
+def test_reset_allows_different_instrument_same_day() -> None:
+    service = DailyKSLevelService()
+
+    first = service.calculate(
+        make_candle()
+    )
+
+    service.reset()
+
+    second = service.calculate(
+        make_candle(
+            instrument_security_id=(
+                OTHER_INSTRUMENT_SECURITY_ID
+            ),
+            instrument_symbol=(
+                OTHER_INSTRUMENT_SYMBOL
+            ),
+        )
+    )
+
+    assert (
+        first.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        second.instrument_security_id
+        == OTHER_INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        first.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert (
+        second.instrument_symbol
+        == OTHER_INSTRUMENT_SYMBOL
+    )
+
     assert first is not second

@@ -35,7 +35,7 @@ class DhanOptionChainAdapter(OptionChainProvider):
         security id      : 13
         Dhan REST segment: IDX_I
         underlying type  : INDEX
-        lot size         : configurable, default 65
+        lot size         : explicitly supplied by caller
 
     The adapter:
         1. Resolves expiry when request.expiry is absent.
@@ -50,7 +50,7 @@ class DhanOptionChainAdapter(OptionChainProvider):
         underlying_security_id: int = 13,
         underlying_segment: str = "IDX_I",
         underlying_type: str = "INDEX",
-        lot_size: int = 65,
+        lot_size: int | None = None,
     ) -> None:
         if dhan_client is None:
             raise ValueError(
@@ -70,6 +70,19 @@ class DhanOptionChainAdapter(OptionChainProvider):
         if not underlying_type.strip():
             raise ValueError(
                 "underlying_type cannot be empty"
+            )
+
+        if lot_size is None:
+            raise ValueError(
+                "lot_size must be explicitly configured"
+            )
+
+        if (
+            isinstance(lot_size, bool)
+            or not isinstance(lot_size, int)
+        ):
+            raise ValueError(
+                "lot_size must be an integer"
             )
 
         if lot_size <= 0:
