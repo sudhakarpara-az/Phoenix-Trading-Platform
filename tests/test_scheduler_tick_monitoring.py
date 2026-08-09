@@ -809,3 +809,264 @@ def test_non_market_tick_is_rejected() -> None:
         coordinator.process_tick(
             object()
         )
+
+
+
+# ============================================================
+# M10-T13 stale / out-of-order tick safety
+# ============================================================
+
+
+def test_strictly_older_call_tick_is_ignored() -> None:
+    (
+        coordinator,
+        _,
+        preparation,
+        _,
+        _,
+    ) = make_coordinator()
+
+    call_k5 = preparation.call_levels.k5
+
+    # Prime CALL below K5 with the newest accepted timestamp.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 - 10.0,
+            timestamp=dt(
+                9,
+                21,
+                2,
+            ),
+        )
+    ) == ()
+
+    # This packet is older. If accepted it would move the
+    # LevelMonitor previous price above K5 and destroy the real
+    # upward crossing that follows.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 + 10.0,
+            timestamp=dt(
+                9,
+                21,
+                1,
+            ),
+        )
+    ) == ()
+
+    events = coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 + 1.0,
+            timestamp=dt(
+                9,
+                21,
+                3,
+            ),
+        )
+    )
+
+    assert any(
+        event.level.value == "K5"
+        and event.event_type
+        is LevelEventType.CROSSED_UP
+        for event in events
+    )
+
+
+def test_equal_timestamp_selected_ticks_are_allowed() -> None:
+    (
+        coordinator,
+        _,
+        preparation,
+        _,
+        _,
+    ) = make_coordinator()
+
+    call_k5 = preparation.call_levels.k5
+
+    timestamp = dt(
+        9,
+        21,
+        2,
+    )
+
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 - 10.0,
+            timestamp=timestamp,
+        )
+    ) == ()
+
+    events = coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 + 1.0,
+            timestamp=timestamp,
+        )
+    )
+
+    assert any(
+        event.level.value == "K5"
+        and event.event_type
+        is LevelEventType.CROSSED_UP
+        for event in events
+    )
+
+
+def test_call_and_put_have_independent_tick_watermarks() -> None:
+    (
+        coordinator,
+        _,
+        preparation,
+        _,
+        _,
+    ) = make_coordinator()
+
+    call_k5 = preparation.call_levels.k5
+    put_k5 = preparation.put_levels.k5
+
+    # CALL advances much further in time.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 - 10.0,
+            timestamp=dt(
+                9,
+                25,
+            ),
+        )
+    ) == ()
+
+    # PUT is still allowed to process its own earlier timestamp.
+    events = coordinator.process_tick(
+        make_tick(
+            security_id=PUT_SECURITY_ID,
+            symbol=PUT_SYMBOL,
+            price=put_k5,
+            timestamp=dt(
+                9,
+                22,
+            ),
+        )
+    )
+
+    assert len(events) == 1
+
+    assert (
+        events[0].instrument_security_id
+        == PUT_SECURITY_ID
+    )
+
+    assert events[0].level.value == "K5"
+
+
+def test_tick_before_actual_late_activation_is_ignored() -> None:
+    (
+        preparation,
+        call_service,
+        put_service,
+    ) = make_preparation()
+
+    scheduler = make_waiting_scheduler()
+
+    TradingDayMonitoringCoordinator(
+        scheduler=scheduler
+    ).activate_monitoring(
+        activated_at=dt(
+            9,
+            25,
+        )
+    )
+
+    coordinator = (
+        TradingDayTickMonitoringCoordinator(
+            scheduler=scheduler,
+            preparation=preparation,
+            call_level_service=call_service,
+            put_level_service=put_service,
+        )
+    )
+
+    call_k5 = preparation.call_levels.k5
+
+    # It is after nominal 09:21, but before the actual 09:25
+    # activation and therefore must not prime the monitor.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 - 10.0,
+            timestamp=dt(
+                9,
+                24,
+                59,
+            ),
+        )
+    ) == ()
+
+    # First genuinely live tick after activation must not create a
+    # crossing from the rejected historical value.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5 + 1.0,
+            timestamp=dt(
+                9,
+                25,
+                1,
+            ),
+        )
+    ) == ()
+
+
+def test_wrong_symbol_future_tick_does_not_advance_watermark() -> None:
+    (
+        coordinator,
+        _,
+        preparation,
+        _,
+        _,
+    ) = make_coordinator()
+
+    call_k5 = preparation.call_levels.k5
+
+    # Invalid identity with a future timestamp must not poison the
+    # CALL monotonic watermark.
+    assert coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol="WRONG-SYMBOL",
+            price=call_k5,
+            timestamp=dt(
+                10,
+                0,
+            ),
+        )
+    ) == ()
+
+    events = coordinator.process_tick(
+        make_tick(
+            security_id=CALL_SECURITY_ID,
+            symbol=CALL_SYMBOL,
+            price=call_k5,
+            timestamp=dt(
+                9,
+                30,
+            ),
+        )
+    )
+
+    assert len(events) == 1
+
+    assert events[0].event_type is LevelEventType.TOUCHED

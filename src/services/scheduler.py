@@ -1561,6 +1561,23 @@ class TradingDayTickMonitoringCoordinator:
             ),
         )
 
+        # ----------------------------------------------------
+        # T13 stale-tick protection.
+        #
+        # MarketCache already rejects older cached values, but
+        # TickProcessor still returns every normalized MarketTick.
+        # T14 may therefore route a stale returned tick directly
+        # into this coordinator.
+        #
+        # CALL and PUT must retain independent monotonic clocks.
+        # Equal timestamps remain valid because a broker feed may
+        # legitimately deliver multiple updates with the same
+        # timestamp.
+        # ----------------------------------------------------
+        self._last_call_tick_at: datetime | None = None
+        self._last_put_tick_at: datetime | None = None
+        self._tick_lock = RLock()
+
     @property
     def scheduler(self) -> TradingDayScheduler:
         return self._scheduler
@@ -1591,8 +1608,10 @@ class TradingDayTickMonitoringCoordinator:
                 "tick must be a MarketTick"
             )
 
+        snapshot = self._scheduler.snapshot
+
         if (
-            self._scheduler.state
+            snapshot.state
             is not TradingDayState.MONITORING
         ):
             return ()
@@ -1609,21 +1628,67 @@ class TradingDayTickMonitoringCoordinator:
         ):
             return ()
 
+        # Monitoring may be activated later than the nominal
+        # 09:21 boundary. Never consume historical ticks that
+        # predate the actual M10 MONITORING transition.
+        if tick.timestamp < snapshot.updated_at:
+            return ()
+
         if (
             tick.security_id
             == self._preparation.selected_call.security_id
         ):
-            return self._call_monitor.process_tick(
-                tick
-            )
+            # Reject identity-invalid traffic before touching the
+            # CALL watermark. A malformed future-dated packet must
+            # not prevent a subsequent valid packet from being
+            # processed.
+            if (
+                tick.symbol
+                != self._preparation.selected_call.symbol
+            ):
+                return ()
+
+            with self._tick_lock:
+                if (
+                    self._last_call_tick_at is not None
+                    and tick.timestamp
+                    < self._last_call_tick_at
+                ):
+                    return ()
+
+                events = self._call_monitor.process_tick(
+                    tick
+                )
+
+                self._last_call_tick_at = tick.timestamp
+
+                return events
 
         if (
             tick.security_id
             == self._preparation.selected_put.security_id
         ):
-            return self._put_monitor.process_tick(
-                tick
-            )
+            if (
+                tick.symbol
+                != self._preparation.selected_put.symbol
+            ):
+                return ()
+
+            with self._tick_lock:
+                if (
+                    self._last_put_tick_at is not None
+                    and tick.timestamp
+                    < self._last_put_tick_at
+                ):
+                    return ()
+
+                events = self._put_monitor.process_tick(
+                    tick
+                )
+
+                self._last_put_tick_at = tick.timestamp
+
+                return events
 
         return ()
 
