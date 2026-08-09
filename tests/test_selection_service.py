@@ -165,6 +165,154 @@ def make_signal(
     )
 
 
+def test_select_for_option_type_selects_call_without_signal() -> None:
+    call = make_candidate(
+        security_id="101",
+        option_type=OptionType.CALL,
+        strike=24500,
+        delta=0.60,
+    )
+
+    put = make_candidate(
+        security_id="201",
+        option_type=OptionType.PUT,
+        strike=24500,
+        delta=-0.60,
+    )
+
+    provider = FakeProvider(
+        candidates=(
+            put,
+            call,
+        )
+    )
+
+    service = OptionSelectionService(
+        provider=provider,
+        selector=make_selector(),
+    )
+
+    requested_at = datetime(
+        2026,
+        8,
+        7,
+        9,
+        16,
+        1,
+    )
+
+    result = service.select_for_option_type(
+        option_type=OptionType.CALL,
+        trading_date=EXPIRY.replace(day=7),
+        reference_price=24500.0,
+        requested_at=requested_at,
+    )
+
+    assert (
+        result.status
+        is OptionSelectionStatus.SELECTED
+    )
+
+    assert result.selected_option is not None
+
+    assert (
+        result.selected_option.option_type
+        is OptionType.CALL
+    )
+
+    assert (
+        result.selected_option.security_id
+        == "101"
+    )
+
+    assert provider.last_request is not None
+
+    assert (
+        provider.last_request.option_type
+        is OptionType.CALL
+    )
+
+
+def test_call_and_put_can_be_selected_independently_before_signal() -> None:
+    call = make_candidate(
+        security_id="101",
+        option_type=OptionType.CALL,
+        strike=24500,
+        delta=0.60,
+    )
+
+    put = make_candidate(
+        security_id="201",
+        option_type=OptionType.PUT,
+        strike=24600,
+        delta=-0.60,
+    )
+
+    service = OptionSelectionService(
+        provider=FakeProvider(
+            candidates=(
+                call,
+                put,
+            )
+        ),
+        selector=make_selector(),
+    )
+
+    requested_at = datetime(
+        2026,
+        8,
+        7,
+        9,
+        16,
+        1,
+    )
+
+    trading_date = requested_at.date()
+
+    call_result = service.select_for_option_type(
+        option_type=OptionType.CALL,
+        trading_date=trading_date,
+        reference_price=24500.0,
+        requested_at=requested_at,
+    )
+
+    put_result = service.select_for_option_type(
+        option_type=OptionType.PUT,
+        trading_date=trading_date,
+        reference_price=24500.0,
+        requested_at=requested_at,
+    )
+
+    assert call_result.selected_option is not None
+    assert put_result.selected_option is not None
+
+    assert (
+        call_result.selected_option.option_type
+        is OptionType.CALL
+    )
+
+    assert (
+        put_result.selected_option.option_type
+        is OptionType.PUT
+    )
+
+    assert (
+        call_result.selected_option.security_id
+        != put_result.selected_option.security_id
+    )
+
+    assert (
+        call_result.selected_option.selection_delta_target
+        == 0.60
+    )
+
+    assert (
+        put_result.selected_option.selection_delta_target
+        == 0.60
+    )
+
+
+
 def test_call_signal_maps_to_call_option() -> None:
     call = make_candidate(
         security_id="101",
