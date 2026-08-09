@@ -21,6 +21,19 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import Enum
 from threading import RLock
+from typing import Protocol
+
+from src.runtime.recovery_types import (
+    StartupRecoveryPlan,
+    StartupRecoveryResult,
+)
+from src.runtime.runtime_orchestrator import (
+    TradingRuntimeOrchestrator,
+)
+from src.runtime.runtime_types import (
+    RuntimeSnapshot,
+    RuntimeState,
+)
 
 
 class TradingDayState(str, Enum):
@@ -617,10 +630,348 @@ class TradingDayScheduler:
             )
 
 
+class StartupRecoveryPort(Protocol):
+    """
+    Narrow M10 boundary to the existing M08 startup-recovery
+    service.
+    """
+
+    def build_plan(
+        self,
+        *,
+        trading_date: date,
+    ) -> StartupRecoveryPlan:
+        ...
+
+    def recover(
+        self,
+        *,
+        orchestrator: TradingRuntimeOrchestrator,
+        source_runtime_id: str,
+        checked_at: datetime,
+    ) -> StartupRecoveryResult:
+        ...
+
+
+class TradingDayStartupError(RuntimeError):
+    """
+    Raised when M10 startup composition is internally
+    inconsistent and cannot safely proceed.
+    """
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayStartupResult:
+    """
+    Immutable result of M10 trading-day startup coordination.
+    """
+
+    trading_day: TradingDaySnapshot
+    runtime: RuntimeSnapshot
+    recovery_plan: StartupRecoveryPlan
+    recovery_result: StartupRecoveryResult | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return (
+            not self.trading_day.is_terminal
+            and self.runtime.state
+            is RuntimeState.RUNNING
+        )
+
+
+class TradingDayStartupCoordinator:
+    """
+    Coordinates M10 trading-day startup with the existing
+    M08 runtime and recovery lifecycle.
+
+    Ownership remains separated:
+
+        M10:
+            trading-day eligibility and scheduler state
+
+        M08:
+            runtime startup, recovery, reconciliation and
+            runtime execution gates
+
+    This coordinator does not construct repositories, broker
+    clients, event buses, or runtime components.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        recovery_service: StartupRecoveryPort,
+    ) -> None:
+        self._scheduler = scheduler
+        self._recovery_service = recovery_service
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    def build_recovery_plan(
+        self,
+    ) -> StartupRecoveryPlan:
+        """
+        Discover recovery requirements for this trading date.
+
+        The plan is built before the application composition
+        boundary constructs its TradingRuntimeOrchestrator so
+        recovery_required can be supplied correctly.
+        """
+
+        return self._recovery_service.build_plan(
+            trading_date=self._scheduler.trading_date
+        )
+
+    def start(
+        self,
+        *,
+        orchestrator: TradingRuntimeOrchestrator,
+        recovery_plan: StartupRecoveryPlan,
+        started_at: datetime,
+        recovery_checked_at: datetime | None = None,
+        running_at: datetime | None = None,
+    ) -> TradingDayStartupResult:
+        """
+        Start one trading day without bypassing M08 recovery.
+
+        Trading day:
+            calendar gate
+              ->
+            M08 runtime start
+              ->
+            M08 recovery when required
+              ->
+            M08 RUNNING
+
+        Non-trading day:
+            scheduler becomes NON_TRADING_DAY and the supplied
+            runtime remains CREATED.
+        """
+
+        self._validate_datetime(
+            started_at,
+            name="started_at",
+        )
+
+        checked_at = (
+            recovery_checked_at
+            if recovery_checked_at is not None
+            else started_at
+        )
+
+        run_at = (
+            running_at
+            if running_at is not None
+            else checked_at
+        )
+
+        self._validate_datetime(
+            checked_at,
+            name="recovery_checked_at",
+        )
+
+        self._validate_datetime(
+            run_at,
+            name="running_at",
+        )
+
+        if checked_at < started_at:
+            raise TradingDayStartupError(
+                "recovery_checked_at cannot be before "
+                "started_at"
+            )
+
+        if run_at < checked_at:
+            raise TradingDayStartupError(
+                "running_at cannot be before "
+                "recovery_checked_at"
+            )
+
+        self._validate_runtime_contract(
+            orchestrator=orchestrator,
+            recovery_plan=recovery_plan,
+        )
+
+        trading_day = self._scheduler.start(
+            started_at=started_at
+        )
+
+        if (
+            trading_day.state
+            is TradingDayState.NON_TRADING_DAY
+        ):
+            return TradingDayStartupResult(
+                trading_day=trading_day,
+                runtime=orchestrator.snapshot,
+                recovery_plan=recovery_plan,
+            )
+
+        runtime = orchestrator.start(
+            started_at=started_at
+        )
+
+        if runtime.state is RuntimeState.FAILED:
+            trading_day = self._scheduler.fail(
+                message="runtime startup failed",
+                failed_at=started_at,
+            )
+
+            return TradingDayStartupResult(
+                trading_day=trading_day,
+                runtime=runtime,
+                recovery_plan=recovery_plan,
+            )
+
+        recovery_result: (
+            StartupRecoveryResult | None
+        ) = None
+
+        if recovery_plan.recovery_required:
+            if (
+                orchestrator.state
+                is not RuntimeState.RECOVERING
+            ):
+                trading_day = self._scheduler.fail(
+                    message=(
+                        "runtime did not enter RECOVERING "
+                        "state"
+                    ),
+                    failed_at=checked_at,
+                )
+
+                return TradingDayStartupResult(
+                    trading_day=trading_day,
+                    runtime=orchestrator.snapshot,
+                    recovery_plan=recovery_plan,
+                )
+
+            source_runtime_id = (
+                recovery_plan.source_runtime_id
+            )
+
+            if source_runtime_id is None:
+                raise TradingDayStartupError(
+                    "recovery-required plan must provide "
+                    "source_runtime_id"
+                )
+
+            recovery_result = (
+                self._recovery_service.recover(
+                    orchestrator=orchestrator,
+                    source_runtime_id=(
+                        source_runtime_id
+                    ),
+                    checked_at=checked_at,
+                )
+            )
+
+            if not recovery_result.completed:
+                trading_day = self._scheduler.fail(
+                    message=(
+                        "startup recovery did not complete"
+                    ),
+                    failed_at=checked_at,
+                )
+
+                return TradingDayStartupResult(
+                    trading_day=trading_day,
+                    runtime=orchestrator.snapshot,
+                    recovery_plan=recovery_plan,
+                    recovery_result=recovery_result,
+                )
+
+        if orchestrator.state is not RuntimeState.READY:
+            trading_day = self._scheduler.fail(
+                message=(
+                    "runtime did not reach READY state"
+                ),
+                failed_at=checked_at,
+            )
+
+            return TradingDayStartupResult(
+                trading_day=trading_day,
+                runtime=orchestrator.snapshot,
+                recovery_plan=recovery_plan,
+                recovery_result=recovery_result,
+            )
+
+        runtime = orchestrator.run(
+            running_at=run_at
+        )
+
+        return TradingDayStartupResult(
+            trading_day=self._scheduler.snapshot,
+            runtime=runtime,
+            recovery_plan=recovery_plan,
+            recovery_result=recovery_result,
+        )
+
+    def _validate_runtime_contract(
+        self,
+        *,
+        orchestrator: TradingRuntimeOrchestrator,
+        recovery_plan: StartupRecoveryPlan,
+    ) -> None:
+        runtime_snapshot = orchestrator.snapshot
+
+        if (
+            runtime_snapshot.trading_date
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayStartupError(
+                "runtime trading_date does not match "
+                "scheduler trading_date"
+            )
+
+        if (
+            runtime_snapshot.recovery_required
+            != recovery_plan.recovery_required
+        ):
+            raise TradingDayStartupError(
+                "runtime recovery_required does not match "
+                "recovery plan"
+            )
+
+        if (
+            recovery_plan.recovery_required
+            and not (
+                recovery_plan.source_runtime_id
+                and
+                recovery_plan.source_runtime_id.strip()
+            )
+        ):
+            raise TradingDayStartupError(
+                "recovery-required plan must provide "
+                "source_runtime_id"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+        *,
+        name: str,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                f"{name} must be a datetime"
+            )
+
+
 __all__ = [
+    "StartupRecoveryPort",
     "TradingCalendar",
     "TradingDayScheduler",
     "TradingDaySnapshot",
+    "TradingDayStartupCoordinator",
+    "TradingDayStartupError",
+    "TradingDayStartupResult",
     "TradingDayState",
     "TradingDayTransitionError",
 ]
