@@ -311,6 +311,49 @@ class TradingCalendar:
             and trading_date not in self.holidays
         )
 
+    def next_trading_day(
+        self,
+        after_date: date,
+    ) -> date:
+        """
+        Return the first eligible trading date strictly after
+        after_date.
+
+        Weekends and explicitly configured exchange holidays are
+        skipped using the same deterministic calendar rules used
+        by is_trading_day().
+        """
+
+        self._validate_trading_date(
+            after_date
+        )
+
+        if after_date == date.max:
+            raise ValueError(
+                "cannot calculate trading day after date.max"
+            )
+
+        candidate = (
+            after_date
+            + timedelta(
+                days=1
+            )
+        )
+
+        while not self.is_trading_day(
+            candidate
+        ):
+            if candidate == date.max:
+                raise ValueError(
+                    "no later trading day is representable"
+                )
+
+            candidate += timedelta(
+                days=1
+            )
+
+        return candidate
+
     @staticmethod
     def _validate_trading_date(
         trading_date: date,
@@ -2175,6 +2218,433 @@ class TradingDayForceExitCoordinator:
             )
 
 
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayCloseReadiness:
+    """
+    Broker/runtime-independent EOD readiness snapshot.
+
+    M10 may become CLOSED only when Phoenix has no remaining
+    open position quantity and no unresolved order state.
+
+    The concrete adapter that assembles these counts belongs to
+    the later application integration task.
+    """
+
+    open_position_count: int
+    unresolved_order_count: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            (
+                "open_position_count",
+                self.open_position_count,
+            ),
+            (
+                "unresolved_order_count",
+                self.unresolved_order_count,
+            ),
+        ):
+            if (
+                type(value) is not int
+                or value < 0
+            ):
+                raise ValueError(
+                    f"{name} must be a non-negative int"
+                )
+
+    @property
+    def is_ready(self) -> bool:
+        return (
+            self.open_position_count == 0
+            and self.unresolved_order_count == 0
+        )
+
+
+class TradingDayCloseReadinessPort(Protocol):
+    """
+    Narrow application boundary for authoritative EOD readiness.
+
+    M10 deliberately does not know whether these counts come
+    from M07 registries, persistence repositories, broker
+    reconciliation, or a composed application service.
+    """
+
+    def evaluate_close_readiness(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayCloseReadiness:
+        ...
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayEndOfDayResult:
+    """
+    Result of one M10 end-of-day close evaluation.
+    """
+
+    complete: bool
+
+    transitioned_to_closed: bool
+
+    snapshot: TradingDaySnapshot
+
+    readiness: TradingDayCloseReadiness | None
+
+    evaluated_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.complete:
+            if (
+                self.snapshot.state
+                is not TradingDayState.CLOSED
+            ):
+                raise ValueError(
+                    "complete EOD result requires CLOSED state"
+                )
+
+            if (
+                self.transitioned_to_closed
+                and (
+                    self.readiness is None
+                    or not self.readiness.is_ready
+                )
+            ):
+                raise ValueError(
+                    "CLOSED transition requires ready EOD state"
+                )
+
+        else:
+            if (
+                self.snapshot.state
+                is not TradingDayState.EXIT_ONLY
+            ):
+                raise ValueError(
+                    "incomplete EOD result requires EXIT_ONLY state"
+                )
+
+            if self.transitioned_to_closed:
+                raise ValueError(
+                    "incomplete EOD result cannot transition CLOSED"
+                )
+
+            if (
+                self.readiness is None
+                or self.readiness.is_ready
+            ):
+                raise ValueError(
+                    "incomplete EOD result requires unresolved state"
+                )
+
+
+class TradingDayEndOfDayError(RuntimeError):
+    """
+    M10 could not safely determine or complete EOD closure.
+    """
+
+
+class TradingDayEndOfDayCoordinator:
+    """
+    Safely completes one Phoenix trading day.
+
+    Required sequence:
+
+        EXIT_ONLY
+          -> prove no open position quantity
+          -> prove no unresolved orders
+          -> CLOSED
+
+    CLOSED is therefore NOT synonymous with "15:15 reached".
+
+    This coordinator deliberately does not:
+
+        - stop M08 runtime components
+        - checkpoint RuntimeState.STOPPED
+        - clear positions or order records
+        - clear M04 signal/re-entry state
+        - clear M07 risk state
+        - reset CE/PE level services
+        - submit or reconcile broker orders
+
+    Runtime shutdown/persistence ordering and concrete reset
+    composition remain application-integration responsibilities.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        readiness_provider:
+            TradingDayCloseReadinessPort,
+        schedule: ForceExitWindowSchedule | None = None,
+    ) -> None:
+        self._scheduler = scheduler
+
+        self._readiness_provider = (
+            readiness_provider
+        )
+
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else ForceExitWindowSchedule()
+        )
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def schedule(self) -> ForceExitWindowSchedule:
+        return self._schedule
+
+    def evaluate(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayEndOfDayResult:
+        """
+        Close only after the 15:15 boundary and only when all
+        exposure/order state is resolved.
+
+        Repeated calls after CLOSED are idempotent and do not
+        query the readiness provider again.
+        """
+
+        self._validate_datetime(
+            evaluated_at
+        )
+
+        self._validate_trading_date(
+            evaluated_at
+        )
+
+        snapshot = self._scheduler.snapshot
+
+        if (
+            evaluated_at
+            < snapshot.updated_at
+        ):
+            raise TradingDayEndOfDayError(
+                "EOD timestamp cannot move backwards"
+            )
+
+        if (
+            snapshot.state
+            is TradingDayState.CLOSED
+        ):
+            return TradingDayEndOfDayResult(
+                complete=True,
+                transitioned_to_closed=False,
+                snapshot=snapshot,
+                readiness=None,
+                evaluated_at=evaluated_at,
+            )
+
+        if (
+            snapshot.state
+            is not TradingDayState.EXIT_ONLY
+        ):
+            raise TradingDayEndOfDayError(
+                "EOD close requires EXIT_ONLY state"
+            )
+
+        if (
+            evaluated_at.time()
+            < self._schedule.force_exit_time
+        ):
+            raise TradingDayEndOfDayError(
+                "EOD close cannot occur before force-exit time"
+            )
+
+        try:
+            readiness = (
+                self._readiness_provider
+                .evaluate_close_readiness(
+                    evaluated_at=evaluated_at,
+                )
+            )
+
+        except Exception as exc:
+            raise TradingDayEndOfDayError(
+                "EOD readiness evaluation failed"
+            ) from exc
+
+        if not isinstance(
+            readiness,
+            TradingDayCloseReadiness,
+        ):
+            raise TradingDayEndOfDayError(
+                "EOD readiness provider must return "
+                "TradingDayCloseReadiness"
+            )
+
+        if not readiness.is_ready:
+            return TradingDayEndOfDayResult(
+                complete=False,
+                transitioned_to_closed=False,
+                snapshot=self._scheduler.snapshot,
+                readiness=readiness,
+                evaluated_at=evaluated_at,
+            )
+
+        try:
+            closed_snapshot = (
+                self._scheduler.transition(
+                    target_state=TradingDayState.CLOSED,
+                    transitioned_at=evaluated_at,
+                )
+            )
+
+        except Exception as exc:
+            raise TradingDayEndOfDayError(
+                "trading-day close transition failed"
+            ) from exc
+
+        return TradingDayEndOfDayResult(
+            complete=True,
+            transitioned_to_closed=True,
+            snapshot=closed_snapshot,
+            readiness=readiness,
+            evaluated_at=evaluated_at,
+        )
+
+    def _validate_trading_date(
+        self,
+        value: datetime,
+    ) -> None:
+        if (
+            value.date()
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayEndOfDayError(
+                "EOD timestamp does not match "
+                "scheduler trading_date"
+            )
+
+    @staticmethod
+    def _validate_datetime(
+        value: datetime,
+    ) -> None:
+        if type(value) is not datetime:
+            raise TypeError(
+                "EOD timestamp must be a datetime"
+            )
+
+
+class TradingDayRolloverError(RuntimeError):
+    """
+    M10 could not safely construct the next trading-day scheduler.
+    """
+
+
+class TradingDayRolloverCoordinator:
+    """
+    Constructs a fresh scheduler for the next eligible trading
+    date after the current day is CLOSED.
+
+    Day-scoped strategy/risk component reset is intentionally not
+    performed here. T14 application composition owns creation or
+    reset of those concrete components.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+    ) -> None:
+        self._scheduler = scheduler
+
+        self._next_scheduler: (
+            TradingDayScheduler | None
+        ) = None
+
+        self._lock = RLock()
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def created_next_scheduler(
+        self,
+    ) -> TradingDayScheduler | None:
+        with self._lock:
+            return self._next_scheduler
+
+    def create_next_scheduler(
+        self,
+        *,
+        created_at: datetime,
+    ) -> TradingDayScheduler:
+        """
+        Return one immutable rollover target scheduler.
+
+        Repeated calls return the same newly-created scheduler.
+        """
+
+        if type(created_at) is not datetime:
+            raise TypeError(
+                "rollover created_at must be a datetime"
+            )
+
+        snapshot = self._scheduler.snapshot
+
+        if (
+            snapshot.state
+            is not TradingDayState.CLOSED
+        ):
+            raise TradingDayRolloverError(
+                "rollover requires CLOSED trading day"
+            )
+
+        if (
+            snapshot.closed_at is None
+        ):
+            raise TradingDayRolloverError(
+                "CLOSED trading day requires closed_at"
+            )
+
+        if created_at < snapshot.closed_at:
+            raise TradingDayRolloverError(
+                "rollover created_at cannot be before closed_at"
+            )
+
+        with self._lock:
+            if self._next_scheduler is not None:
+                return self._next_scheduler
+
+            try:
+                next_date = (
+                    self._scheduler
+                    .calendar
+                    .next_trading_day(
+                        self._scheduler.trading_date
+                    )
+                )
+
+            except Exception as exc:
+                raise TradingDayRolloverError(
+                    "next trading date could not be determined"
+                ) from exc
+
+            self._next_scheduler = (
+                TradingDayScheduler(
+                    trading_date=next_date,
+                    created_at=created_at,
+                    calendar=self._scheduler.calendar,
+                )
+            )
+
+            return self._next_scheduler
+
+
 class HistoricalCandlePort(Protocol):
     """
     Narrow M10 boundary for completed historical one-minute
@@ -2987,6 +3457,11 @@ __all__ = [
     "TradingDayLevelPreparationError",
     "ForceExitCoordinatorPort",
     "ForceExitWindowSchedule",
+    "TradingDayCloseReadiness",
+    "TradingDayCloseReadinessPort",
+    "TradingDayEndOfDayCoordinator",
+    "TradingDayEndOfDayError",
+    "TradingDayEndOfDayResult",
     "RuntimeEntryGatePort",
     "TradingDayEntryGateCoordinator",
     "TradingDayEntryGateDecision",
@@ -2997,6 +3472,8 @@ __all__ = [
     "TradingDayForceExitResult",
     "TradingDayLevelPreparationResult",
     "TradingDayMonitoringCoordinator",
+    "TradingDayRolloverCoordinator",
+    "TradingDayRolloverError",
     "TradingDayMonitoringError",
     "TradingDayTickMonitoringCoordinator",
     "TradingDayTickMonitoringError",
