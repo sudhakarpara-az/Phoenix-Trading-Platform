@@ -204,6 +204,90 @@ class TradingDaySnapshot:
         }
 
 
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingCalendar:
+    """
+    Deterministic M10 trading-day eligibility calendar.
+
+    Phoenix treats Monday-Friday as candidate trading days.
+    Exchange holidays are supplied explicitly by the application
+    boundary rather than hardcoded into strategy/runtime logic.
+
+    This keeps M10 deterministic in tests while allowing a future
+    NSE calendar adapter or configuration source to provide the
+    authoritative holiday set.
+    """
+
+    holidays: frozenset[date] = frozenset()
+
+    def __post_init__(self) -> None:
+        normalized: set[date] = set()
+
+        for holiday in self.holidays:
+            if type(holiday) is not date:
+                raise TypeError(
+                    "trading calendar holidays must contain "
+                    "date values"
+                )
+
+            normalized.add(holiday)
+
+        object.__setattr__(
+            self,
+            "holidays",
+            frozenset(normalized),
+        )
+
+    def is_weekend(
+        self,
+        trading_date: date,
+    ) -> bool:
+        self._validate_trading_date(
+            trading_date
+        )
+
+        return trading_date.weekday() >= 5
+
+    def is_holiday(
+        self,
+        trading_date: date,
+    ) -> bool:
+        self._validate_trading_date(
+            trading_date
+        )
+
+        return trading_date in self.holidays
+
+    def is_trading_day(
+        self,
+        trading_date: date,
+    ) -> bool:
+        """
+        Return True only for an eligible market trading date.
+        """
+
+        self._validate_trading_date(
+            trading_date
+        )
+
+        return (
+            trading_date.weekday() < 5
+            and trading_date not in self.holidays
+        )
+
+    @staticmethod
+    def _validate_trading_date(
+        trading_date: date,
+    ) -> None:
+        if type(trading_date) is not date:
+            raise TypeError(
+                "trading_date must be a date"
+            )
+
+
 class TradingDayTransitionError(RuntimeError):
     """
     Raised when a future scheduler implementation attempts an
@@ -212,6 +296,7 @@ class TradingDayTransitionError(RuntimeError):
 
 
 __all__ = [
+    "TradingCalendar",
     "TradingDaySnapshot",
     "TradingDayState",
     "TradingDayTransitionError",

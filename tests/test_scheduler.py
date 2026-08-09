@@ -7,6 +7,7 @@ from datetime import date, datetime
 import pytest
 
 from src.services.scheduler import (
+    TradingCalendar,
     TradingDaySnapshot,
     TradingDayState,
     TradingDayTransitionError,
@@ -296,3 +297,161 @@ def test_transition_error_is_runtime_error() -> None:
         TradingDayTransitionError,
         RuntimeError,
     )
+
+
+def test_trading_calendar_weekday_is_trading_day() -> None:
+    calendar = TradingCalendar()
+
+    assert calendar.is_trading_day(
+        date(2026, 8, 10)
+    ) is True
+
+
+def test_trading_calendar_saturday_is_not_trading_day() -> None:
+    calendar = TradingCalendar()
+
+    trading_date = date(
+        2026,
+        8,
+        8,
+    )
+
+    assert calendar.is_weekend(
+        trading_date
+    ) is True
+
+    assert calendar.is_trading_day(
+        trading_date
+    ) is False
+
+
+def test_trading_calendar_sunday_is_not_trading_day() -> None:
+    calendar = TradingCalendar()
+
+    trading_date = date(
+        2026,
+        8,
+        9,
+    )
+
+    assert calendar.is_weekend(
+        trading_date
+    ) is True
+
+    assert calendar.is_trading_day(
+        trading_date
+    ) is False
+
+
+def test_explicit_weekday_holiday_is_not_trading_day() -> None:
+    holiday = date(
+        2026,
+        8,
+        11,
+    )
+
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                holiday,
+            }
+        )
+    )
+
+    assert calendar.is_holiday(
+        holiday
+    ) is True
+
+    assert calendar.is_trading_day(
+        holiday
+    ) is False
+
+
+def test_non_holiday_weekday_remains_trading_day() -> None:
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                date(
+                    2026,
+                    8,
+                    11,
+                ),
+            }
+        )
+    )
+
+    assert calendar.is_trading_day(
+        date(
+            2026,
+            8,
+            12,
+        )
+    ) is True
+
+
+def test_calendar_holidays_are_immutable() -> None:
+    holiday = date(
+        2026,
+        8,
+        11,
+    )
+
+    calendar = TradingCalendar(
+        holidays=frozenset(
+            {
+                holiday,
+            }
+        )
+    )
+
+    assert isinstance(
+        calendar.holidays,
+        frozenset,
+    )
+
+    assert calendar.holidays == frozenset(
+        {
+            holiday,
+        }
+    )
+
+
+def test_calendar_rejects_datetime_as_holiday() -> None:
+    with pytest.raises(
+        TypeError,
+        match=(
+            "trading calendar holidays must "
+            "contain date values"
+        ),
+    ):
+        TradingCalendar(
+            holidays=frozenset(
+                {
+                    datetime(
+                        2026,
+                        8,
+                        11,
+                        0,
+                        0,
+                    ),
+                }
+            )
+        )
+
+
+def test_calendar_rejects_datetime_as_trading_date() -> None:
+    calendar = TradingCalendar()
+
+    with pytest.raises(
+        TypeError,
+        match="trading_date must be a date",
+    ):
+        calendar.is_trading_day(
+            datetime(
+                2026,
+                8,
+                10,
+                9,
+                15,
+            )
+        )
