@@ -25,6 +25,7 @@ from threading import RLock
 from typing import Protocol
 
 from src.market.candle_builder import HistoricalCandle
+from src.market.market_types import MarketTick
 from src.option_selection.option_types import (
     OptionSelectionResult,
     OptionSelectionStatus,
@@ -45,8 +46,10 @@ from src.runtime.runtime_types import (
 from src.strategy.daily_ks_level_service import (
     DailyKSLevelService,
 )
+from src.strategy.level_monitor import LevelMonitor
 from src.strategy.strategy_types import (
     KSLevels,
+    LevelEvent,
     ReferenceCandle,
 )
 
@@ -1425,6 +1428,267 @@ class TradingDayMonitoringCoordinator:
             )
 
 
+class TradingDayTickMonitoringError(RuntimeError):
+    """
+    Raised when selected-option monitoring ownership cannot be
+    proven safely.
+    """
+
+
+class TradingDayTickMonitoringCoordinator:
+    """
+    Routes normalized live ticks to the selected CE/PE monitors.
+
+    T09 responsibilities:
+
+        MarketTick
+            ->
+        selected contract identity routing
+            ->
+        CALL or PUT LevelMonitor
+            ->
+        tuple[LevelEvent, ...]
+
+    Rules:
+        - Requires the completed T07 level-preparation result.
+        - CALL and PUT retain separate DailyKSLevelService owners.
+        - Monitoring occurs only in M10 MONITORING state.
+        - Ticks before 09:21 are ignored.
+        - Only the selected CE and PE security IDs are routed.
+        - NIFTY spot and all other contracts are ignored.
+        - Contract symbol/date checks remain enforced by
+          LevelMonitor.
+        - No SignalEngine, execution, position, or broker logic
+          belongs here.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        preparation: TradingDayLevelPreparationResult,
+        call_level_service: DailyKSLevelService,
+        put_level_service: DailyKSLevelService,
+        schedule: MonitoringWindowSchedule | None = None,
+    ) -> None:
+        if call_level_service is put_level_service:
+            raise ValueError(
+                "CALL and PUT monitoring must use separate "
+                "DailyKSLevelService instances"
+            )
+
+        self._scheduler = scheduler
+        self._preparation = preparation
+        self._call_level_service = call_level_service
+        self._put_level_service = put_level_service
+        self._schedule = (
+            schedule
+            if schedule is not None
+            else MonitoringWindowSchedule()
+        )
+
+        self._validate_preparation()
+        self._validate_service_levels(
+            level_service=self._call_level_service,
+            expected_levels=self._preparation.call_levels,
+            side="CALL",
+        )
+        self._validate_service_levels(
+            level_service=self._put_level_service,
+            expected_levels=self._preparation.put_levels,
+            side="PUT",
+        )
+
+        self._call_monitor = LevelMonitor(
+            level_service=self._call_level_service,
+            security_id=(
+                self._preparation
+                .selected_call
+                .security_id
+            ),
+        )
+
+        self._put_monitor = LevelMonitor(
+            level_service=self._put_level_service,
+            security_id=(
+                self._preparation
+                .selected_put
+                .security_id
+            ),
+        )
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    @property
+    def preparation(
+        self,
+    ) -> TradingDayLevelPreparationResult:
+        return self._preparation
+
+    @property
+    def schedule(self) -> MonitoringWindowSchedule:
+        return self._schedule
+
+    def process_tick(
+        self,
+        tick: MarketTick,
+    ) -> tuple[LevelEvent, ...]:
+        """
+        Route one normalized market tick to its selected monitor.
+
+        Routine non-entry traffic fails closed by returning an
+        empty event tuple rather than raising.
+        """
+
+        if not isinstance(tick, MarketTick):
+            raise TypeError(
+                "tick must be a MarketTick"
+            )
+
+        if (
+            self._scheduler.state
+            is not TradingDayState.MONITORING
+        ):
+            return ()
+
+        if (
+            tick.timestamp.date()
+            != self._scheduler.trading_date
+        ):
+            return ()
+
+        if (
+            tick.timestamp.time()
+            < self._schedule.monitoring_start
+        ):
+            return ()
+
+        if (
+            tick.security_id
+            == self._preparation.selected_call.security_id
+        ):
+            return self._call_monitor.process_tick(
+                tick
+            )
+
+        if (
+            tick.security_id
+            == self._preparation.selected_put.security_id
+        ):
+            return self._put_monitor.process_tick(
+                tick
+            )
+
+        return ()
+
+    def _validate_preparation(self) -> None:
+        trading_date = self._scheduler.trading_date
+
+        call_option = self._preparation.selected_call
+        put_option = self._preparation.selected_put
+
+        call_levels = self._preparation.call_levels
+        put_levels = self._preparation.put_levels
+
+        if (
+            self._preparation.prepared_at.date()
+            != trading_date
+        ):
+            raise TradingDayTickMonitoringError(
+                "level preparation does not belong to "
+                "scheduler trading_date"
+            )
+
+        if (
+            call_option.security_id
+            == put_option.security_id
+        ):
+            raise TradingDayTickMonitoringError(
+                "CALL and PUT selected security IDs must differ"
+            )
+
+        if call_option.option_type.value != "CALL":
+            raise TradingDayTickMonitoringError(
+                "selected_call must be a CALL contract"
+            )
+
+        if put_option.option_type.value != "PUT":
+            raise TradingDayTickMonitoringError(
+                "selected_put must be a PUT contract"
+            )
+
+        self._validate_contract_levels(
+            selected_option=call_option,
+            levels=call_levels,
+            side="CALL",
+        )
+
+        self._validate_contract_levels(
+            selected_option=put_option,
+            levels=put_levels,
+            side="PUT",
+        )
+
+    def _validate_contract_levels(
+        self,
+        *,
+        selected_option: SelectedOption,
+        levels: KSLevels,
+        side: str,
+    ) -> None:
+        if (
+            levels.trading_date
+            != self._scheduler.trading_date
+        ):
+            raise TradingDayTickMonitoringError(
+                f"{side} KS levels do not belong to "
+                "scheduler trading_date"
+            )
+
+        if (
+            levels.instrument_security_id
+            != selected_option.security_id
+        ):
+            raise TradingDayTickMonitoringError(
+                f"{side} KS level security ID does not match "
+                "selected contract"
+            )
+
+        if (
+            levels.instrument_symbol
+            != selected_option.symbol
+        ):
+            raise TradingDayTickMonitoringError(
+                f"{side} KS level symbol does not match "
+                "selected contract"
+            )
+
+    @staticmethod
+    def _validate_service_levels(
+        *,
+        level_service: DailyKSLevelService,
+        expected_levels: KSLevels,
+        side: str,
+    ) -> None:
+        try:
+            actual_levels = (
+                level_service.require_levels()
+            )
+
+        except RuntimeError as exc:
+            raise TradingDayTickMonitoringError(
+                f"{side} DailyKSLevelService is not ready"
+            ) from exc
+
+        if actual_levels != expected_levels:
+            raise TradingDayTickMonitoringError(
+                f"{side} DailyKSLevelService does not own "
+                "the prepared KS levels"
+            )
+
+
 class HistoricalCandlePort(Protocol):
     """
     Narrow M10 boundary for completed historical one-minute
@@ -2238,6 +2502,8 @@ __all__ = [
     "TradingDayLevelPreparationResult",
     "TradingDayMonitoringCoordinator",
     "TradingDayMonitoringError",
+    "TradingDayTickMonitoringCoordinator",
+    "TradingDayTickMonitoringError",
     "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
