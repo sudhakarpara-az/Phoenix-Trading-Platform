@@ -132,6 +132,9 @@ class LevelMonitor:
             if tick.security_id != expected_security_id:
                 return ()
 
+            if tick.symbol != levels.instrument_symbol:
+                return ()
+
             tick_date = tick.timestamp.date()
 
             if tick_date != levels.trading_date:

@@ -166,6 +166,78 @@ def test_monitor_ignores_wrong_tick_security_id() -> None:
     assert events == ()
 
 
+def test_selected_option_ltp_is_used_as_event_market_price() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    option_ltp = levels.k5
+
+    events = monitor.process_tick(
+        make_tick(
+            price=option_ltp,
+            security_id=INSTRUMENT_SECURITY_ID,
+            symbol=INSTRUMENT_SYMBOL,
+        )
+    )
+
+    assert len(events) == 1
+
+    event = events[0]
+
+    assert (
+        event.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        event.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert event.market_price == option_ltp
+    assert event.level_price == levels.k5
+
+
+def test_nifty_spot_tick_cannot_trigger_selected_option_levels() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    events = monitor.process_tick(
+        make_tick(
+            price=levels.k5,
+            security_id="13",
+            symbol="NIFTY 50",
+        )
+    )
+
+    assert events == ()
+    assert monitor.previous_price is None
+
+
+
+def test_matching_security_id_with_wrong_symbol_is_rejected() -> None:
+    service = make_service()
+    levels = service.require_levels()
+
+    monitor = LevelMonitor(service)
+
+    events = monitor.process_tick(
+        make_tick(
+            price=levels.k5,
+            security_id=INSTRUMENT_SECURITY_ID,
+            symbol="NIFTY-24750-PE",
+        )
+    )
+
+    assert events == ()
+    assert monitor.previous_price is None
+
+
+
 def test_first_tick_on_k5_generates_touch() -> None:
     service = make_service()
     levels = service.require_levels()

@@ -53,7 +53,7 @@ class StrategySessionState(str, Enum):
 
 class LevelEventType(str, Enum):
     """
-    Type of KS level interaction detected from NIFTY.
+    Type of KS level interaction detected from the strategy instrument.
 
     Additional event types can be added later without modifying
     the market-data domain.
@@ -339,7 +339,7 @@ class KSLevels:
 @dataclass(frozen=True, slots=True)
 class LevelEvent:
     """
-    Represents a NIFTY interaction with one KS level.
+    Represents a strategy-instrument interaction with one KS level.
 
     This is a strategy-level event only. It is not yet a
     trading signal or broker order.
