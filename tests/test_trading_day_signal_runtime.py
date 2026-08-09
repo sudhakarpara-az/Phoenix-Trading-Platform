@@ -723,3 +723,13 @@ def test_non_level_event_is_rejected() -> None:
         ].process_event(
             object()
         )
+
+
+
+def test_runtime_exposes_exact_owned_signal_engine() -> None:
+    stack = make_runtime()
+
+    assert (
+        stack["runtime"].signal_engine
+        is stack["signal_engine"]
+    )

@@ -161,6 +161,21 @@ class TradingDaySignalRuntimeCoordinator:
         return self._entry_gate
 
     @property
+    def signal_engine(
+        self,
+    ) -> SignalEngine:
+        """
+        Return the exact M04 SignalEngine owned by this
+        application runtime boundary.
+
+        T14 entry lifecycle composition must use this same
+        instance when marking a proven trade OPEN or releasing
+        an accepted signal that never became a trade.
+        """
+
+        return self._signal_engine
+
+    @property
     def selected_call(
         self,
     ) -> SelectedOption:
