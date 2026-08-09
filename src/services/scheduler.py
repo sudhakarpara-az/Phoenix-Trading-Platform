@@ -1689,6 +1689,198 @@ class TradingDayTickMonitoringCoordinator:
             )
 
 
+class RuntimeEntryGatePort(Protocol):
+    """
+    Narrow M08 runtime boundary required by the M10 entry gate.
+    """
+
+    def can_accept_new_entries(self) -> bool:
+        ...
+
+
+class TradingDayEntryGateReason(str, Enum):
+    """
+    M10 orchestration-level new-entry decision reason.
+
+    Downstream signal, re-entry, risk, account and execution
+    eligibility remain owned by their existing modules.
+    """
+
+    ALLOWED = "ALLOWED"
+
+    TRADING_DAY_BLOCKED = "TRADING_DAY_BLOCKED"
+    RUNTIME_BLOCKED = "RUNTIME_BLOCKED"
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayEntryGateDecision:
+    """
+    Result of the M10 + M08 orchestration entry gate.
+    """
+
+    allowed: bool
+
+    reason: TradingDayEntryGateReason
+
+    trading_day_state: TradingDayState
+
+    scheduler_allowed: bool
+
+    runtime_allowed: bool | None
+
+    evaluated_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.allowed:
+            if (
+                self.reason
+                is not TradingDayEntryGateReason.ALLOWED
+            ):
+                raise ValueError(
+                    "allowed entry decision must use ALLOWED reason"
+                )
+
+            if not self.scheduler_allowed:
+                raise ValueError(
+                    "allowed entry decision requires scheduler permission"
+                )
+
+            if self.runtime_allowed is not True:
+                raise ValueError(
+                    "allowed entry decision requires runtime permission"
+                )
+
+        else:
+            if (
+                self.reason
+                is TradingDayEntryGateReason.ALLOWED
+            ):
+                raise ValueError(
+                    "blocked entry decision cannot use ALLOWED reason"
+                )
+
+
+class TradingDayEntryGateError(RuntimeError):
+    """
+    M10 could not safely evaluate the runtime entry boundary.
+    """
+
+
+class TradingDayEntryGateCoordinator:
+    """
+    Combines the M10 trading-day entry gate with the M08
+    runtime-level entry gate.
+
+    Evaluation order:
+
+        1. M10 trading-day scheduler
+        2. M08 runtime gate
+
+    If either denies entry, processing must stop before any
+    new signal/order path is invoked.
+
+    Deliberately NOT duplicated here:
+
+        - M04 signal eligibility / duplicate / lock / re-entry
+        - M07 exposure and daily-risk controls
+        - M09 account/connectivity/funds eligibility
+        - M06 order eligibility / execution safeguards
+
+    Those remain mandatory downstream gates.
+    """
+
+    def __init__(
+        self,
+        *,
+        scheduler: TradingDayScheduler,
+        runtime_gate: RuntimeEntryGatePort,
+    ) -> None:
+        self._scheduler = scheduler
+        self._runtime_gate = runtime_gate
+
+    @property
+    def scheduler(self) -> TradingDayScheduler:
+        return self._scheduler
+
+    def evaluate(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayEntryGateDecision:
+        if type(evaluated_at) is not datetime:
+            raise TypeError(
+                "evaluated_at must be a datetime"
+            )
+
+        if (
+            evaluated_at.date()
+            != self._scheduler.trading_date
+        ):
+            raise ValueError(
+                "evaluated_at must belong to scheduler trading_date"
+            )
+
+        snapshot = self._scheduler.snapshot
+
+        scheduler_allowed = (
+            snapshot.can_accept_new_entries
+        )
+
+        if not scheduler_allowed:
+            return TradingDayEntryGateDecision(
+                allowed=False,
+                reason=(
+                    TradingDayEntryGateReason
+                    .TRADING_DAY_BLOCKED
+                ),
+                trading_day_state=snapshot.state,
+                scheduler_allowed=False,
+                runtime_allowed=None,
+                evaluated_at=evaluated_at,
+            )
+
+        try:
+            runtime_allowed = (
+                self._runtime_gate
+                .can_accept_new_entries()
+            )
+
+        except Exception as exc:
+            raise TradingDayEntryGateError(
+                "runtime entry gate evaluation failed"
+            ) from exc
+
+        if type(runtime_allowed) is not bool:
+            raise TradingDayEntryGateError(
+                "runtime entry gate must return bool"
+            )
+
+        if not runtime_allowed:
+            return TradingDayEntryGateDecision(
+                allowed=False,
+                reason=(
+                    TradingDayEntryGateReason
+                    .RUNTIME_BLOCKED
+                ),
+                trading_day_state=snapshot.state,
+                scheduler_allowed=True,
+                runtime_allowed=False,
+                evaluated_at=evaluated_at,
+            )
+
+        return TradingDayEntryGateDecision(
+            allowed=True,
+            reason=TradingDayEntryGateReason.ALLOWED,
+            trading_day_state=snapshot.state,
+            scheduler_allowed=True,
+            runtime_allowed=True,
+            evaluated_at=evaluated_at,
+        )
+
+
 class HistoricalCandlePort(Protocol):
     """
     Narrow M10 boundary for completed historical one-minute
@@ -2499,6 +2691,11 @@ __all__ = [
     "TradingDayOptionSelectionResult",
     "TradingDayLevelPreparationCoordinator",
     "TradingDayLevelPreparationError",
+    "RuntimeEntryGatePort",
+    "TradingDayEntryGateCoordinator",
+    "TradingDayEntryGateDecision",
+    "TradingDayEntryGateError",
+    "TradingDayEntryGateReason",
     "TradingDayLevelPreparationResult",
     "TradingDayMonitoringCoordinator",
     "TradingDayMonitoringError",
