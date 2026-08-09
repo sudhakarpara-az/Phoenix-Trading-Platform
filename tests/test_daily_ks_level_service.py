@@ -184,6 +184,114 @@ def test_repeated_calculation_same_day_returns_same_object() -> None:
     assert first is second
 
 
+def test_separate_services_own_ce_and_pe_levels_independently() -> None:
+    ce_service = DailyKSLevelService()
+    pe_service = DailyKSLevelService()
+
+    ce_candle = make_candle(
+        instrument_security_id=INSTRUMENT_SECURITY_ID,
+        instrument_symbol=INSTRUMENT_SYMBOL,
+    )
+
+    pe_candle = ReferenceCandle(
+        trading_date=TRADING_DATE,
+        instrument_security_id=(
+            OTHER_INSTRUMENT_SECURITY_ID
+        ),
+        instrument_symbol=(
+            OTHER_INSTRUMENT_SYMBOL
+        ),
+        start_time=datetime(
+            2026,
+            8,
+            7,
+            9,
+            15,
+        ),
+        end_time=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+        ),
+        open=210.0,
+        high=225.0,
+        low=195.0,
+        close=218.0,
+    )
+
+    ce_levels = ce_service.calculate(
+        ce_candle,
+        calculated_at=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            1,
+        ),
+    )
+
+    pe_levels = pe_service.calculate(
+        pe_candle,
+        calculated_at=datetime(
+            2026,
+            8,
+            7,
+            9,
+            16,
+            1,
+        ),
+    )
+
+    assert ce_service.is_ready is True
+    assert pe_service.is_ready is True
+
+    assert ce_service.trading_date == TRADING_DATE
+    assert pe_service.trading_date == TRADING_DATE
+
+    assert ce_service.get_levels() is ce_levels
+    assert pe_service.get_levels() is pe_levels
+
+    assert (
+        ce_levels.instrument_security_id
+        == INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        ce_levels.instrument_symbol
+        == INSTRUMENT_SYMBOL
+    )
+
+    assert (
+        pe_levels.instrument_security_id
+        == OTHER_INSTRUMENT_SECURITY_ID
+    )
+
+    assert (
+        pe_levels.instrument_symbol
+        == OTHER_INSTRUMENT_SYMBOL
+    )
+
+    assert ce_levels is not pe_levels
+
+    assert ce_levels.k5 != pe_levels.k5
+    assert ce_levels.k6 != pe_levels.k6
+    assert ce_levels.k7 != pe_levels.k7
+
+    assert (
+        ce_service.require_levels()
+        is ce_levels
+    )
+
+    assert (
+        pe_service.require_levels()
+        is pe_levels
+    )
+
+
+
 def test_same_day_different_security_id_requires_reset() -> None:
     service = DailyKSLevelService()
 
