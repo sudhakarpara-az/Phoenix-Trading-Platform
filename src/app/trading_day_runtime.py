@@ -32,6 +32,9 @@ from enum import Enum
 from threading import RLock
 from typing import Any
 
+from src.account.dhan_account_adapter import (
+    DhanAccountAdapter,
+)
 from src.account.account_execution_gate import (
     AccountEntryBlockedError,
     AccountExecutionSafetyGate,
@@ -94,6 +97,7 @@ from src.option_selection.option_types import (
     SelectedOption,
 )
 from src.services.scheduler import (
+    TradingDayCloseReadiness,
     TradingDayEntryGateCoordinator,
     TradingDayEntryGateDecision,
     TradingDayLevelPreparationResult,
@@ -2833,4 +2837,192 @@ class TradingDayMarketIngressHandler:
 __all__ += [
     "TradingDayMarketIngressError",
     "TradingDayMarketIngressHandler",
+]
+
+
+class TradingDayCloseReadinessProvider:
+    """
+    T14 application-level implementation of M10's
+    TradingDayCloseReadinessPort.
+
+    Closure requires agreement across both application/runtime
+    state and authoritative broker-wide account state.
+
+    Local truth:
+        - M07 PositionRegistry.open_positions()
+        - unresolved LIVE entry contexts retained by
+          TradingDayEntryRuntimeCoordinator
+
+    Broker truth:
+        - Dhan account positions with non-zero netQty
+        - Dhan day orders whose state is not safely terminal
+
+    Counts use max(local, broker), not addition. The same Phoenix
+    position/order normally exists in both domains and must not be
+    double-counted. For M10 closure, the safety requirement is
+    simply that both views prove zero.
+
+    Any broker or local inspection failure propagates. The
+    TradingDayEndOfDayCoordinator will therefore keep Phoenix in
+    EXIT_ONLY rather than transitioning CLOSED without proof.
+    """
+
+    def __init__(
+        self,
+        *,
+        entry_runtime:
+            TradingDayEntryRuntimeCoordinator,
+        account_adapter:
+            DhanAccountAdapter,
+    ) -> None:
+        if not isinstance(
+            entry_runtime,
+            TradingDayEntryRuntimeCoordinator,
+        ):
+            raise TypeError(
+                "entry_runtime must be a "
+                "TradingDayEntryRuntimeCoordinator"
+            )
+
+        if not isinstance(
+            account_adapter,
+            DhanAccountAdapter,
+        ):
+            raise TypeError(
+                "account_adapter must be a "
+                "DhanAccountAdapter"
+            )
+
+        self._entry_runtime = (
+            entry_runtime
+        )
+
+        self._account_adapter = (
+            account_adapter
+        )
+
+    @property
+    def entry_runtime(
+        self,
+    ) -> TradingDayEntryRuntimeCoordinator:
+        return self._entry_runtime
+
+    @property
+    def account_adapter(
+        self,
+    ) -> DhanAccountAdapter:
+        return self._account_adapter
+
+    def evaluate_close_readiness(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayCloseReadiness:
+        if type(evaluated_at) is not datetime:
+            raise TypeError(
+                "evaluated_at must be a datetime"
+            )
+
+        local_open_positions = len(
+            self._entry_runtime
+            .position_registry
+            .open_positions()
+        )
+
+        local_unresolved_orders = (
+            self._entry_runtime
+            .pending_count
+        )
+
+        self._validate_count(
+            local_open_positions,
+            name=(
+                "local open position count"
+            ),
+        )
+
+        self._validate_count(
+            local_unresolved_orders,
+            name=(
+                "local unresolved order count"
+            ),
+        )
+
+        broker_open_positions = (
+            self._account_adapter
+            .fetch_open_position_count(
+                broker=(
+                    self._account_adapter
+                    .broker
+                ),
+                account_id=(
+                    self._account_adapter
+                    .account_id
+                ),
+                requested_at=(
+                    evaluated_at
+                ),
+            )
+        )
+
+        broker_unresolved_orders = (
+            self._account_adapter
+            .fetch_unresolved_order_count(
+                broker=(
+                    self._account_adapter
+                    .broker
+                ),
+                account_id=(
+                    self._account_adapter
+                    .account_id
+                ),
+                requested_at=(
+                    evaluated_at
+                ),
+            )
+        )
+
+        self._validate_count(
+            broker_open_positions,
+            name=(
+                "broker open position count"
+            ),
+        )
+
+        self._validate_count(
+            broker_unresolved_orders,
+            name=(
+                "broker unresolved order count"
+            ),
+        )
+
+        return TradingDayCloseReadiness(
+            open_position_count=max(
+                local_open_positions,
+                broker_open_positions,
+            ),
+            unresolved_order_count=max(
+                local_unresolved_orders,
+                broker_unresolved_orders,
+            ),
+        )
+
+    @staticmethod
+    def _validate_count(
+        value: int,
+        *,
+        name: str,
+    ) -> None:
+        if (
+            type(value) is not int
+            or value < 0
+        ):
+            raise RuntimeError(
+                f"{name} must be a "
+                "non-negative int"
+            )
+
+
+__all__ += [
+    "TradingDayCloseReadinessProvider",
 ]
