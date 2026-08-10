@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -28,6 +28,10 @@ from src.execution.order_state_machine import (
     OrderLifecycleState,
     OrderStateMachine,
 )
+from src.execution.position_exit_types import (
+    FilledPosition,
+    FilledPositionId,
+)
 from src.option_selection.option_types import (
     OptionCandidate,
     OptionContract,
@@ -42,6 +46,13 @@ from src.signals.signal_types import (
     SignalReason,
     SignalState,
     TradingSignal,
+)
+from src.risk.risk_types import (
+    ManagedPosition,
+    ManagedPositionState,
+    PositionRiskId,
+    StopLossDefinition,
+    TargetDefinition,
 )
 from src.strategy.strategy_types import (
     EntryLevel,
@@ -135,6 +146,20 @@ class FailingOrderRepository(
         del record
         raise RuntimeError(
             "simulated durable order failure"
+        )
+
+
+class FailingPositionRepository(
+    FakeRepository
+):
+    def add(
+        self,
+        record,
+    ):
+        del record
+
+        raise RuntimeError(
+            "simulated durable position failure"
         )
 
 
@@ -318,6 +343,64 @@ def make_state_machine(
     return machine
 
 
+def make_managed_position(
+    *,
+    intent,
+    broker_reference,
+    filled_at,
+):
+    filled = FilledPosition(
+        position_id=FilledPositionId(
+            "POS-20260810-000001"
+        ),
+        signal_id=(
+            intent.signal.signal_id
+        ),
+        entry_intent_id=(
+            intent.intent_id
+        ),
+        entry_broker_reference=(
+            broker_reference
+        ),
+        selected_option=(
+            intent.selected_option
+        ),
+        level=(
+            intent.signal.level
+        ),
+        quantity=(
+            intent.quantity
+        ),
+        entry_price=100.65,
+        filled_at=filled_at,
+    )
+
+    return ManagedPosition(
+        risk_id=PositionRiskId(
+            "RISK:POS-20260810-000001"
+        ),
+        position=filled,
+        open_quantity=(
+            intent.quantity
+        ),
+        closed_quantity=0,
+        realized_pnl=0.0,
+        state=ManagedPositionState.OPEN,
+        stop_loss=StopLossDefinition(
+            stop_price=85.65,
+            risk_points=15.0,
+        ),
+        target=TargetDefinition(
+            executable_price=127.65,
+            mapped_target_price=130.65,
+            booking_zone_start=127.65,
+            booking_zone_end=130.65,
+        ),
+        created_at=filled_at,
+        updated_at=filled_at,
+    )
+
+
 def make_persistence(
     *,
     order_repository=None,
@@ -453,6 +536,7 @@ def test_wrapper_persists_submitted_before_broker_call():
             .intent_id
             .value
         )
+        assert order is not None
 
         observed["exists"] = (
             order is not None
@@ -494,6 +578,7 @@ def test_wrapper_persists_submitted_before_broker_call():
             intent.intent_id.value
         )
     )
+    assert durable_order is not None
 
     assert (
         durable_order.broker_order_id
@@ -677,3 +762,1061 @@ def test_delegate_exception_leaves_durable_submitted_order():
     assert durable_order is not None
     assert durable_order.status == "SUBMITTED"
     assert durable_order.broker_order_id is None
+
+def test_authoritative_fill_facts_persist_before_terminal_order():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        persistence,
+        _,
+        _,
+        order_repository,
+    ) = make_persistence()
+
+    submitted_snapshot = (
+        machine.snapshot(
+            intent.intent_id
+        )
+    )
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            submitted_snapshot
+        ),
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=(
+            BrokerOrderReference(
+                broker_name="DHAN",
+                order_id="BROKER-FILL-001",
+            )
+        ),
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    reference = result.broker_reference
+    assert reference is not None
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    durable_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert durable_order is not None
+
+    assert (
+        durable_order.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    assert (
+        durable_order.filled_quantity
+        == intent.quantity
+    )
+
+    assert (
+        durable_order.average_fill_price
+        == 100.65
+    )
+
+    assert (
+        durable_order.updated_at
+        == filled_at
+    )
+
+    assert durable_order.position_id is None
+
+
+def test_authoritative_fill_requires_m06_filled_lifecycle():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        persistence,
+        _,
+        _,
+        order_repository,
+    ) = make_persistence()
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=(
+            BrokerOrderReference(
+                broker_name="DHAN",
+                order_id="BROKER-FILL-002",
+            )
+        ),
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    reference = result.broker_reference
+    assert reference is not None
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=(
+            LATER
+            + timedelta(seconds=1)
+        ),
+    )
+
+    with pytest.raises(
+        TradingStatePersistenceError,
+        match="M06 FILLED",
+    ):
+        persistence.persist_broker_execution_result(
+            intent=intent,
+            result=result,
+            broker_snapshot=broker_snapshot,
+            lifecycle_snapshot=(
+                machine.snapshot(
+                    intent.intent_id
+                )
+            ),
+        )
+
+    durable_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert durable_order is not None
+    assert durable_order.filled_quantity == 0
+    assert durable_order.average_fill_price is None
+
+    assert (
+        durable_order.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+
+def test_managed_position_maps_to_durable_position_record():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        _,
+        signal_repository,
+        option_repository,
+        order_repository,
+    ) = make_persistence()
+
+    position_repository = FakeRepository(
+        "position_id"
+    )
+
+    persistence = SQLAlchemyEntryPersistenceService(
+        runtime_id="RUNTIME-001",
+        signal_repository=signal_repository,
+        option_selection_repository=(
+            option_repository
+        ),
+        order_repository=order_repository,
+        position_repository=(
+            position_repository
+        ),
+    )
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="DHAN",
+        order_id="BROKER-POS-001",
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=reference,
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    lifecycle_snapshot = (
+        machine.snapshot(
+            intent.intent_id
+        )
+    )
+
+    # First crash-safe boundary:
+    # authoritative fill facts become durable.
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+    )
+
+    order_before_position = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert order_before_position is not None
+
+    assert (
+        order_before_position.filled_quantity
+        == intent.quantity
+    )
+
+    assert (
+        order_before_position.average_fill_price
+        == 100.65
+    )
+
+    assert (
+        order_before_position.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    managed = make_managed_position(
+        intent=intent,
+        broker_reference=reference,
+        filled_at=filled_at,
+    )
+
+    # Second crash-safe boundary:
+    # exact M07 ManagedPosition becomes durable.
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+        managed_position=managed,
+    )
+
+    durable = position_repository.get(
+        managed.position_id.value
+    )
+
+    assert durable is not None
+
+    assert (
+        durable.position_id
+        == managed.position_id.value
+    )
+
+    assert (
+        durable.risk_id
+        == managed.risk_id.value
+    )
+
+    assert durable.runtime_id == "RUNTIME-001"
+
+    assert (
+        durable.signal_id
+        == intent.signal.signal_id.value
+    )
+
+    assert (
+        durable.entry_order_intent_id
+        == intent.intent_id.value
+    )
+
+    assert (
+        durable.security_id
+        == intent.selected_option.security_id
+    )
+
+    assert (
+        durable.symbol
+        == intent.selected_option.symbol
+    )
+
+    assert durable.option_type == "CALL"
+    assert durable.level == "K5"
+
+    assert durable.original_quantity == 65
+    assert durable.open_quantity == 65
+    assert durable.closed_quantity == 0
+
+    assert durable.entry_price == 100.65
+    assert durable.realized_pnl == 0.0
+    assert durable.state == "OPEN"
+
+    assert durable.stop_price == 85.65
+    assert durable.stop_risk_points == 15.0
+    assert durable.stop_state == "ARMED"
+
+    assert (
+        durable.executable_target_price
+        == 127.65
+    )
+
+    assert (
+        durable.mapped_target_price
+        == 130.65
+    )
+
+    assert (
+        durable.booking_zone_start
+        == 127.65
+    )
+
+    assert (
+        durable.booking_zone_end
+        == 130.65
+    )
+
+    assert durable.target_state == "ARMED"
+
+    assert durable.opened_at == filled_at
+    assert durable.updated_at == filled_at
+    assert durable.closed_at is None
+
+    durable_order = order_repository.get(
+        intent.intent_id.value
+    )
+
+    assert durable_order is not None
+
+    # Still recovery-visible.
+    assert (
+        durable_order.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    # Terminal linkage is deliberately later.
+    assert durable_order.position_id is None
+
+
+def test_position_failure_keeps_durable_order_recovery_visible():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        _,
+        signal_repository,
+        option_repository,
+        order_repository,
+    ) = make_persistence()
+
+    position_repository = (
+        FailingPositionRepository(
+            "position_id"
+        )
+    )
+
+    persistence = SQLAlchemyEntryPersistenceService(
+        runtime_id="RUNTIME-001",
+        signal_repository=signal_repository,
+        option_selection_repository=(
+            option_repository
+        ),
+        order_repository=order_repository,
+        position_repository=(
+            position_repository
+        ),
+    )
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="DHAN",
+        order_id="BROKER-POS-FAIL",
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=reference,
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    lifecycle_snapshot = machine.snapshot(
+        intent.intent_id
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+    )
+
+    managed = make_managed_position(
+        intent=intent,
+        broker_reference=reference,
+        filled_at=filled_at,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated durable position failure",
+    ):
+        persistence.persist_broker_execution_result(
+            intent=intent,
+            result=result,
+            broker_snapshot=broker_snapshot,
+            lifecycle_snapshot=(
+                lifecycle_snapshot
+            ),
+            managed_position=managed,
+        )
+
+    durable_order = order_repository.get(
+        intent.intent_id.value
+    )
+
+    assert durable_order is not None
+
+    # Broker fill truth survived the failed position transaction.
+    assert (
+        durable_order.filled_quantity
+        == intent.quantity
+    )
+
+    assert (
+        durable_order.average_fill_price
+        == 100.65
+    )
+
+    # Critical crash/recovery invariant.
+    assert (
+        durable_order.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    assert durable_order.position_id is None
+
+    assert (
+        position_repository.get(
+            managed.position_id.value
+        )
+        is None
+    )
+
+
+def test_terminal_filled_order_occurs_only_after_durable_position():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        _,
+        signal_repository,
+        option_repository,
+        order_repository,
+    ) = make_persistence()
+
+    position_repository = FakeRepository(
+        "position_id"
+    )
+
+    persistence = SQLAlchemyEntryPersistenceService(
+        runtime_id="RUNTIME-001",
+        signal_repository=signal_repository,
+        option_selection_repository=(
+            option_repository
+        ),
+        order_repository=order_repository,
+        position_repository=(
+            position_repository
+        ),
+    )
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="DHAN",
+        order_id="BROKER-TERMINAL-001",
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=reference,
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    lifecycle_snapshot = (
+        machine.snapshot(
+            intent.intent_id
+        )
+    )
+
+    # --------------------------------------------------------
+    # Crash boundary 1:
+    # broker fill facts durable, order still unresolved.
+    # --------------------------------------------------------
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+    )
+
+    managed = make_managed_position(
+        intent=intent,
+        broker_reference=reference,
+        filled_at=filled_at,
+    )
+
+    # --------------------------------------------------------
+    # Crash boundary 2:
+    # PositionRecord durable, order still recovery-visible.
+    # --------------------------------------------------------
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+        managed_position=managed,
+    )
+
+    durable_position = (
+        position_repository.get(
+            managed.position_id.value
+        )
+    )
+
+    assert durable_position is not None
+
+    before_terminal = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert before_terminal is not None
+
+    assert (
+        before_terminal.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    assert before_terminal.position_id is None
+
+    # --------------------------------------------------------
+    # Crash boundary 3:
+    # only now may the durable order become terminal FILLED.
+    # --------------------------------------------------------
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+        managed_position=managed,
+        terminalize_order=True,
+    )
+
+    durable_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert durable_order is not None
+
+    assert (
+        durable_order.status
+        == OrderLifecycleState.FILLED.value
+    )
+
+    assert (
+        durable_order.position_id
+        == managed.position_id.value
+    )
+
+    assert (
+        durable_order.filled_quantity
+        == intent.quantity
+    )
+
+    assert (
+        durable_order.average_fill_price
+        == managed.entry_price
+    )
+
+    # Position remains independently durable.
+    durable_position_after = (
+        position_repository.get(
+            managed.position_id.value
+        )
+    )
+
+    assert durable_position_after is not None
+
+    assert (
+        durable_position_after.entry_order_intent_id
+        == intent.intent_id.value
+    )
+
+
+def test_terminalization_requires_managed_position():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        persistence,
+        _,
+        _,
+        order_repository,
+    ) = make_persistence()
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="DHAN",
+        order_id="BROKER-TERMINAL-002",
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=reference,
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    lifecycle_snapshot = (
+        machine.snapshot(
+            intent.intent_id
+        )
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="terminalize_order requires managed_position",
+    ):
+        persistence.persist_broker_execution_result(
+            intent=intent,
+            result=result,
+            broker_snapshot=broker_snapshot,
+            lifecycle_snapshot=(
+                lifecycle_snapshot
+            ),
+            terminalize_order=True,
+        )
+
+    durable_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert durable_order is not None
+
+    assert (
+        durable_order.status
+        == OrderLifecycleState.SUBMITTED.value
+    )
+
+    assert durable_order.position_id is None
+
+
+def test_terminal_filled_order_replay_is_idempotent():
+    intent = make_intent()
+
+    machine = make_state_machine(
+        intent
+    )
+
+    (
+        _,
+        signal_repository,
+        option_repository,
+        order_repository,
+    ) = make_persistence()
+
+    position_repository = FakeRepository(
+        "position_id"
+    )
+
+    persistence = SQLAlchemyEntryPersistenceService(
+        runtime_id="RUNTIME-001",
+        signal_repository=signal_repository,
+        option_selection_repository=(
+            option_repository
+        ),
+        order_repository=order_repository,
+        position_repository=(
+            position_repository
+        ),
+    )
+
+    persistence.persist_pre_broker_submission(
+        intent=intent,
+        broker_name="DHAN",
+        lifecycle_snapshot=(
+            machine.snapshot(
+                intent.intent_id
+            )
+        ),
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="DHAN",
+        order_id="BROKER-REPLAY-001",
+    )
+
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        success=True,
+        status=BrokerOrderStatus.PENDING,
+        broker_reference=reference,
+        submitted_at=LATER,
+    )
+
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+    )
+
+    filled_at = (
+        LATER
+        + timedelta(seconds=1)
+    )
+
+    broker_snapshot = BrokerOrderSnapshot(
+        broker_reference=reference,
+        status=BrokerOrderStatus.FILLED,
+        quantity=intent.quantity,
+        filled_quantity=intent.quantity,
+        average_price=100.65,
+        updated_at=filled_at,
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.FILLED,
+        filled_at,
+    )
+
+    lifecycle_snapshot = (
+        machine.snapshot(
+            intent.intent_id
+        )
+    )
+
+    managed = make_managed_position(
+        intent=intent,
+        broker_reference=reference,
+        filled_at=filled_at,
+    )
+
+    # First complete durable terminalization.
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+        managed_position=managed,
+        terminalize_order=True,
+    )
+
+    first_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert first_order is not None
+
+    assert (
+        first_order.status
+        == OrderLifecycleState.FILLED.value
+    )
+
+    assert (
+        first_order.position_id
+        == managed.position_id.value
+    )
+
+    # Simulate T14 replay after a failure/crash occurring after
+    # durable FILLED but before P&L or M04 completion.
+    persistence.persist_broker_execution_result(
+        intent=intent,
+        result=result,
+        broker_snapshot=broker_snapshot,
+        lifecycle_snapshot=(
+            lifecycle_snapshot
+        ),
+        managed_position=managed,
+        terminalize_order=True,
+    )
+
+    replayed_order = (
+        order_repository.get(
+            intent.intent_id.value
+        )
+    )
+
+    assert replayed_order is not None
+
+    assert (
+        replayed_order.status
+        == OrderLifecycleState.FILLED.value
+    )
+
+    assert (
+        replayed_order.position_id
+        == managed.position_id.value
+    )
+
+    assert (
+        replayed_order.filled_quantity
+        == intent.quantity
+    )
+
+    assert (
+        replayed_order.average_fill_price
+        == managed.entry_price
+    )
+
+    durable_position = (
+        position_repository.get(
+            managed.position_id.value
+        )
+    )
+
+    assert durable_position is not None
+
+    assert (
+        durable_position.entry_order_intent_id
+        == intent.intent_id.value
+    )

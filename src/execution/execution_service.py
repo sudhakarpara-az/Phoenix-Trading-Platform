@@ -241,6 +241,21 @@ class ExecutionService:
         return self._idempotency_guard
 
     @property
+    def order_state_machine(
+        self,
+    ) -> OrderStateMachine:
+        """
+        Return the exact M06 order lifecycle state machine.
+
+        T14 persistence uses this read-only ownership boundary
+        after broker reconciliation so durable state reflects
+        the lifecycle already decided by M06 rather than
+        independently remapping broker status.
+        """
+
+        return self._state_machine
+
+    @property
     def broker_provider(
         self,
     ) -> BrokerExecutionProvider:

@@ -40,6 +40,9 @@ from src.account.account_execution_gate import (
     AccountExecutionSafetyGate,
     AccountGatedEntryResult,
 )
+from src.database.entry_durability import (
+    DurableEntryBrokerExecutionProvider,
+)
 from src.execution.broker_execution_provider import (
     BrokerOrderSnapshot,
 )
@@ -1711,6 +1714,69 @@ class TradingDayEntryRuntimeCoordinator:
         )
 
         try:
+            execution_result = (
+                context.execution_result
+            )
+
+            if execution_result is None:
+                raise TradingDayEntryRuntimeError(
+                    "filled entry requires "
+                    "execution result"
+                )
+
+            execution_service = (
+                self._entry_adapter
+                .execution_service
+            )
+
+            broker_provider = getattr(
+                execution_service,
+                "broker_provider",
+                None,
+            )
+
+            durable_provider = (
+                broker_provider
+                if isinstance(
+                    broker_provider,
+                    DurableEntryBrokerExecutionProvider,
+                )
+                else None
+            )
+
+            # --------------------------------------------
+            # Crash-safe boundary 1.
+            #
+            # M06 has already reconciled this order to
+            # FILLED. Persist authoritative broker fill
+            # facts BEFORE constructing M07 state.
+            #
+            # Non-durable M06 compositions intentionally
+            # preserve their existing behavior.
+            # --------------------------------------------
+
+            if durable_provider is not None:
+                lifecycle_snapshot = (
+                    execution_service
+                    .order_state_machine
+                    .snapshot(
+                        context.intent.intent_id
+                    )
+                )
+
+                persistence = (
+                    durable_provider.persistence
+                )
+
+                persistence.persist_broker_execution_result(
+                    intent=context.intent,
+                    result=execution_result,
+                    broker_snapshot=snapshot,
+                    lifecycle_snapshot=(
+                        lifecycle_snapshot
+                    ),
+                )
+
             filled_position = (
                 context.filled_position
             )
@@ -1821,6 +1887,49 @@ class TradingDayEntryRuntimeCoordinator:
                     "with same-contract target mapping"
                 )
 
+            # --------------------------------------------
+            # Crash-safe boundaries 2 and 3.
+            #
+            # The exact M07 ManagedPosition now contains:
+            #
+            #   broker average fill
+            #   stop loss
+            #   same-contract mapped target
+            #
+            # Persist PositionRecord first. Only after that
+            # independent transaction is proven durable may the
+            # durable OrderRecord become FILLED and link to it.
+            # --------------------------------------------
+
+            if durable_provider is not None:
+                lifecycle_snapshot = (
+                    execution_service
+                    .order_state_machine
+                    .snapshot(
+                        context.intent.intent_id
+                    )
+                )
+
+                persistence = (
+                    durable_provider.persistence
+                )
+
+                persistence.persist_broker_execution_result(
+                    intent=context.intent,
+                    result=execution_result,
+                    broker_snapshot=snapshot,
+                    lifecycle_snapshot=(
+                        lifecycle_snapshot
+                    ),
+                    managed_position=managed,
+                    terminalize_order=True,
+                )
+
+            # --------------------------------------------
+            # P&L comes only after durable order+position
+            # completion.
+            # --------------------------------------------
+
             # Register P&L exactly once.
             pnl_state = (
                 self._pnl_tracker.get(
@@ -1836,8 +1945,18 @@ class TradingDayEntryRuntimeCoordinator:
                     ),
                 )
 
-            # Only after broker fill + M07 risk initialization
-            # are fully established does M04 become ACTIVE.
+            # M04 is deliberately LAST.
+            #
+            # At this point:
+            #
+            #   M06 broker FILLED is proven
+            #   durable fill facts exist when durability is enabled
+            #   M07 ManagedPosition + target exist
+            #   durable PositionRecord exists when enabled
+            #   durable OrderRecord is FILLED when enabled
+            #   P&L registration exists
+            #
+            # Only now may the M04 trade lock become ACTIVE.
             self._signal_runtime.signal_engine.mark_trade_open(
                 context.signal
             )

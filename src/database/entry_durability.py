@@ -23,6 +23,7 @@ from typing import Any, Protocol
 from src.database.schema import (
     OptionSelectionRecord,
     OrderRecord,
+    PositionRecord,
     SignalRecord,
 )
 from src.execution.broker_execution_provider import (
@@ -31,6 +32,7 @@ from src.execution.broker_execution_provider import (
     BrokerOrderSnapshot,
 )
 from src.execution.execution_types import (
+    BrokerOrderStatus,
     ExecutionResult,
     OrderIntent,
 )
@@ -38,6 +40,9 @@ from src.execution.order_state_machine import (
     OrderLifecycleState,
     OrderStateMachine,
     OrderStateSnapshot,
+)
+from src.risk.risk_types import (
+    ManagedPosition,
 )
 
 
@@ -89,6 +94,8 @@ class SQLAlchemyEntryPersistenceService:
         option_selection_repository:
             _RepositoryPort,
         order_repository: _RepositoryPort,
+        position_repository:
+            _RepositoryPort | None = None,
     ) -> None:
         if not isinstance(
             runtime_id,
@@ -121,6 +128,10 @@ class SQLAlchemyEntryPersistenceService:
 
         self._order_repository = (
             order_repository
+        )
+
+        self._position_repository = (
+            position_repository
         )
 
     @property
@@ -413,18 +424,38 @@ class SQLAlchemyEntryPersistenceService:
         *,
         intent: OrderIntent,
         result: ExecutionResult,
+        broker_snapshot:
+            BrokerOrderSnapshot | None = None,
+        lifecycle_snapshot:
+            OrderStateSnapshot | None = None,
+        managed_position:
+            ManagedPosition | None = None,
+        terminalize_order: bool = False,
     ) -> None:
         """
-        Persist broker acknowledgement immediately after the
-        provider returns.
+        Persist broker acknowledgement and, after M06 proves a
+        full fill, checkpoint authoritative fill facts.
 
-        M06 still owns lifecycle-state mapping. Therefore this
-        method deliberately preserves the existing persisted
-        lifecycle status and only records broker acknowledgement
-        metadata available at this point.
+        Initial broker-return phase:
 
-        A later application persistence step will checkpoint the
-        authoritative post-M06 lifecycle state.
+            durable OrderRecord already exists as SUBMITTED
+                ->
+            persist broker acknowledgement/reference only
+
+        Proven-fill phase:
+
+            M06 lifecycle == FILLED
+                ->
+            broker snapshot == FILLED
+                ->
+            persist filled_quantity + average_fill_price
+
+        Critically, this method does NOT mark the durable
+        OrderRecord FILLED during the proven-fill phase.
+
+        PositionRecord durability must be established first
+        because the SQLAlchemy repositories commit independently
+        and FILLED is terminal for recovery queries.
         """
 
         if not isinstance(
@@ -441,6 +472,74 @@ class SQLAlchemyEntryPersistenceService:
         ):
             raise TypeError(
                 "result must be ExecutionResult"
+            )
+
+        if (
+            broker_snapshot is not None
+            and not isinstance(
+                broker_snapshot,
+                BrokerOrderSnapshot,
+            )
+        ):
+            raise TypeError(
+                "broker_snapshot must be "
+                "BrokerOrderSnapshot"
+            )
+
+        if (
+            lifecycle_snapshot is not None
+            and not isinstance(
+                lifecycle_snapshot,
+                OrderStateSnapshot,
+            )
+        ):
+            raise TypeError(
+                "lifecycle_snapshot must be "
+                "OrderStateSnapshot"
+            )
+
+        if type(terminalize_order) is not bool:
+            raise TypeError(
+                "terminalize_order must be bool"
+            )
+
+        if (
+            terminalize_order
+            and managed_position is None
+        ):
+            raise TypeError(
+                "terminalize_order requires "
+                "managed_position"
+            )
+
+        if (
+            managed_position is not None
+            and not isinstance(
+                managed_position,
+                ManagedPosition,
+            )
+        ):
+            raise TypeError(
+                "managed_position must be "
+                "ManagedPosition"
+            )
+
+        if (
+            (broker_snapshot is None)
+            != (lifecycle_snapshot is None)
+        ):
+            raise TypeError(
+                "broker_snapshot and lifecycle_snapshot "
+                "must be supplied together"
+            )
+
+        if (
+            managed_position is not None
+            and broker_snapshot is None
+        ):
+            raise TypeError(
+                "managed_position requires "
+                "broker_snapshot and lifecycle_snapshot"
             )
 
         if (
@@ -479,6 +578,16 @@ class SQLAlchemyEntryPersistenceService:
                     "conflicts with durable order"
                 )
 
+            if (
+                existing.broker_order_id
+                and existing.broker_order_id
+                != reference.order_id
+            ):
+                raise TradingStatePersistenceError(
+                    "broker order identity conflicts "
+                    "with durable order"
+                )
+
             existing.broker_name = (
                 reference.broker_name
             )
@@ -491,13 +600,607 @@ class SQLAlchemyEntryPersistenceService:
             result.submitted_at
         )
 
-        existing.updated_at = (
-            result.submitted_at
+        existing.updated_at = max(
+            existing.updated_at,
+            result.submitted_at,
         )
+
+        # ----------------------------------------------------
+        # Initial broker acknowledgement only.
+        # ----------------------------------------------------
+
+        if broker_snapshot is None:
+            self._order_repository.update(
+                existing
+            )
+            return
+
+        assert lifecycle_snapshot is not None
+
+        # ----------------------------------------------------
+        # Proven full-fill checkpoint.
+        #
+        # M06 must have already established FILLED before any
+        # authoritative fill facts are written here.
+        # ----------------------------------------------------
+
+        if (
+            lifecycle_snapshot.intent_id
+            != intent.intent_id
+        ):
+            raise TradingStatePersistenceError(
+                "order lifecycle snapshot does not "
+                "belong to supplied intent"
+            )
+
+        if (
+            lifecycle_snapshot.current_state
+            is not OrderLifecycleState.FILLED
+        ):
+            raise TradingStatePersistenceError(
+                "authoritative fill persistence requires "
+                "M06 FILLED lifecycle"
+            )
+
+        if (
+            broker_snapshot.status
+            is not BrokerOrderStatus.FILLED
+        ):
+            raise TradingStatePersistenceError(
+                "authoritative fill persistence requires "
+                "FILLED broker snapshot"
+            )
+
+        if reference is None:
+            raise TradingStatePersistenceError(
+                "authoritative fill persistence requires "
+                "broker reference"
+            )
+
+        if (
+            broker_snapshot.broker_reference
+            != reference
+        ):
+            raise TradingStatePersistenceError(
+                "broker fill snapshot identity conflicts "
+                "with execution result"
+            )
+
+        if (
+            broker_snapshot.quantity
+            != intent.quantity
+        ):
+            raise TradingStatePersistenceError(
+                "broker fill quantity does not match "
+                "order intent"
+            )
+
+        if (
+            broker_snapshot.filled_quantity
+            != intent.quantity
+        ):
+            raise TradingStatePersistenceError(
+                "FILLED broker snapshot must prove "
+                "full entry quantity"
+            )
+
+        if (
+            broker_snapshot.average_price
+            is None
+        ):
+            raise TradingStatePersistenceError(
+                "FILLED broker snapshot requires "
+                "average fill price"
+            )
+
+        durable_order_already_filled = (
+            existing.status
+            == OrderLifecycleState.FILLED.value
+        )
+
+        if (
+            durable_order_already_filled
+            and existing.position_id is None
+        ):
+            raise TradingStatePersistenceError(
+                "durable FILLED order requires "
+                "PositionRecord linkage"
+            )
+
+        if (
+            existing.filled_quantity
+            not in (
+                0,
+                broker_snapshot.filled_quantity,
+            )
+        ):
+            raise TradingStatePersistenceError(
+                "authoritative filled quantity conflicts "
+                "with durable order"
+            )
+
+        if (
+            existing.average_fill_price
+            is not None
+            and existing.average_fill_price
+            != broker_snapshot.average_price
+        ):
+            raise TradingStatePersistenceError(
+                "authoritative average fill price conflicts "
+                "with durable order"
+            )
+
+        existing.filled_quantity = (
+            broker_snapshot.filled_quantity
+        )
+
+        existing.average_fill_price = (
+            broker_snapshot.average_price
+        )
+
+        existing.updated_at = max(
+            existing.updated_at,
+            broker_snapshot.updated_at,
+            lifecycle_snapshot.updated_at,
+        )
+
+        # IMPORTANT:
+        #
+        # existing.status intentionally remains unresolved here.
+        #
+        # PositionRecord must become durable before a later step
+        # is permitted to persist OrderRecord.status == FILLED.
 
         self._order_repository.update(
             existing
         )
+
+        # ----------------------------------------------------
+        # Optional M07 managed-position durability phase.
+        #
+        # The order_repository update above intentionally occurs
+        # first. Its repository owns a separate transaction, so
+        # authoritative broker fill facts become durable before
+        # PositionRecord persistence is attempted.
+        #
+        # Durable OrderRecord status remains non-terminal here.
+        # ----------------------------------------------------
+
+        if managed_position is None:
+            return
+
+        if self._position_repository is None:
+            raise TradingStatePersistenceError(
+                "managed position persistence requires "
+                "position repository"
+            )
+
+        position = managed_position.position
+        stop_loss = managed_position.stop_loss
+        target = managed_position.target
+
+        if (
+            position.entry_intent_id
+            != intent.intent_id
+        ):
+            raise TradingStatePersistenceError(
+                "managed position does not belong "
+                "to supplied order intent"
+            )
+
+        if (
+            position.signal_id
+            != intent.signal.signal_id
+        ):
+            raise TradingStatePersistenceError(
+                "managed position signal conflicts "
+                "with order intent"
+            )
+
+        if (
+            position.selected_option
+            != intent.selected_option
+        ):
+            raise TradingStatePersistenceError(
+                "managed position option conflicts "
+                "with order intent"
+            )
+
+        if (
+            position.level
+            != intent.signal.level
+        ):
+            raise TradingStatePersistenceError(
+                "managed position level conflicts "
+                "with order intent"
+            )
+
+        if (
+            position.entry_broker_reference
+            != broker_snapshot.broker_reference
+        ):
+            raise TradingStatePersistenceError(
+                "managed position broker reference "
+                "conflicts with authoritative fill"
+            )
+
+        if (
+            position.quantity
+            != broker_snapshot.filled_quantity
+        ):
+            raise TradingStatePersistenceError(
+                "managed position quantity conflicts "
+                "with authoritative fill"
+            )
+
+        if (
+            position.entry_price
+            != broker_snapshot.average_price
+        ):
+            raise TradingStatePersistenceError(
+                "managed position entry price conflicts "
+                "with authoritative fill"
+            )
+
+        if (
+            managed_position.state.value
+            != "OPEN"
+        ):
+            raise TradingStatePersistenceError(
+                "initial durable managed position "
+                "must be OPEN"
+            )
+
+        if (
+            managed_position.open_quantity
+            != position.quantity
+            or managed_position.closed_quantity
+            != 0
+        ):
+            raise TradingStatePersistenceError(
+                "initial durable managed position "
+                "must retain full open quantity"
+            )
+
+        if stop_loss is None:
+            raise TradingStatePersistenceError(
+                "initial durable managed position "
+                "requires stop loss"
+            )
+
+        if target is None:
+            raise TradingStatePersistenceError(
+                "initial durable managed position "
+                "requires mapped target"
+            )
+
+        position_record = PositionRecord(
+            position_id=(
+                position.position_id.value
+            ),
+            risk_id=(
+                managed_position.risk_id.value
+            ),
+            runtime_id=self._runtime_id,
+            signal_id=(
+                position.signal_id.value
+            ),
+            entry_order_intent_id=(
+                position.entry_intent_id.value
+            ),
+            security_id=(
+                position.security_id
+            ),
+            symbol=position.symbol,
+            option_type=(
+                position.option_type.value
+            ),
+            level=(
+                position.level.value
+            ),
+            original_quantity=(
+                managed_position
+                .original_quantity
+            ),
+            open_quantity=(
+                managed_position
+                .open_quantity
+            ),
+            closed_quantity=(
+                managed_position
+                .closed_quantity
+            ),
+            entry_price=(
+                managed_position.entry_price
+            ),
+            realized_pnl=(
+                managed_position.realized_pnl
+            ),
+            state=(
+                managed_position.state.value
+            ),
+            stop_price=(
+                stop_loss.stop_price
+            ),
+            stop_risk_points=(
+                stop_loss.risk_points
+            ),
+            stop_state=(
+                stop_loss.state.value
+            ),
+            executable_target_price=(
+                target.executable_price
+            ),
+            mapped_target_price=(
+                target.mapped_target_price
+            ),
+            booking_zone_start=(
+                target.booking_zone_start
+            ),
+            booking_zone_end=(
+                target.booking_zone_end
+            ),
+            target_state=(
+                target.state.value
+            ),
+            opened_at=(
+                position.filled_at
+            ),
+            updated_at=(
+                managed_position.updated_at
+            ),
+            closed_at=None,
+        )
+
+        durable_position = (
+            self._position_repository.get(
+                position_record.position_id
+            )
+        )
+
+        if durable_position is None:
+            self._position_repository.add(
+                position_record
+            )
+
+            durable_position = (
+                self._position_repository.get(
+                    position_record.position_id
+                )
+            )
+
+            if durable_position is None:
+                raise TradingStatePersistenceError(
+                    "position repository did not "
+                    "durably return persisted position"
+                )
+
+        self._require_matching_fields(
+            entity="position",
+            identity=(
+                position_record.position_id
+            ),
+            existing=durable_position,
+            expected=position_record,
+            fields=(
+                "risk_id",
+                "runtime_id",
+                "signal_id",
+                "entry_order_intent_id",
+                "security_id",
+                "symbol",
+                "option_type",
+                "level",
+                "original_quantity",
+                "open_quantity",
+                "closed_quantity",
+                "entry_price",
+                "realized_pnl",
+                "state",
+                "stop_price",
+                "stop_risk_points",
+                "stop_state",
+                "executable_target_price",
+                "mapped_target_price",
+                "booking_zone_start",
+                "booking_zone_end",
+                "target_state",
+                "opened_at",
+                "updated_at",
+                "closed_at",
+            ),
+        )
+
+        # ----------------------------------------------------
+        # PositionRecord is now independently durable.
+        #
+        # Unless explicitly requested, stop here and keep the
+        # durable OrderRecord recovery-visible.
+        # ----------------------------------------------------
+
+        if not terminalize_order:
+            return
+
+        # ----------------------------------------------------
+        # Final durable entry-order boundary.
+        #
+        # Required ordering:
+        #
+        #   broker fill facts durable
+        #       ->
+        #   PositionRecord durable
+        #       ->
+        #   OrderRecord.position_id linked
+        #       ->
+        #   OrderRecord.status == FILLED
+        #
+        # P&L and M04 are application-runtime responsibilities
+        # and deliberately do not occur here.
+        # ----------------------------------------------------
+
+        durable_position = (
+            self._position_repository.get(
+                position_record.position_id
+            )
+        )
+
+        if durable_position is None:
+            raise TradingStatePersistenceError(
+                "durable order FILLED requires "
+                "existing durable PositionRecord"
+            )
+
+        self._require_matching_fields(
+            entity="position",
+            identity=(
+                position_record.position_id
+            ),
+            existing=durable_position,
+            expected=position_record,
+            fields=(
+                "risk_id",
+                "runtime_id",
+                "signal_id",
+                "entry_order_intent_id",
+                "security_id",
+                "symbol",
+                "option_type",
+                "level",
+                "original_quantity",
+                "open_quantity",
+                "closed_quantity",
+                "entry_price",
+                "realized_pnl",
+                "state",
+                "stop_price",
+                "stop_risk_points",
+                "stop_state",
+                "executable_target_price",
+                "mapped_target_price",
+                "booking_zone_start",
+                "booking_zone_end",
+                "target_state",
+                "opened_at",
+                "updated_at",
+                "closed_at",
+            ),
+        )
+
+        if existing.status not in {
+            OrderLifecycleState.SUBMITTED.value,
+            OrderLifecycleState.FILLED.value,
+        }:
+            raise TradingStatePersistenceError(
+                "durable entry order must be "
+                "SUBMITTED or replayed FILLED"
+            )
+
+        if (
+            existing.status
+            == OrderLifecycleState.FILLED.value
+            and existing.position_id
+            != position_record.position_id
+        ):
+            raise TradingStatePersistenceError(
+                "replayed durable FILLED order position "
+                "conflicts with PositionRecord"
+            )
+
+        if (
+            existing.position_id is not None
+            and existing.position_id
+            != position_record.position_id
+        ):
+            raise TradingStatePersistenceError(
+                "durable order position identity conflicts "
+                "with durable PositionRecord"
+            )
+
+        if (
+            existing.filled_quantity
+            != position_record.original_quantity
+        ):
+            raise TradingStatePersistenceError(
+                "durable order filled quantity conflicts "
+                "with durable PositionRecord"
+            )
+
+        if (
+            existing.average_fill_price
+            != position_record.entry_price
+        ):
+            raise TradingStatePersistenceError(
+                "durable order average fill price conflicts "
+                "with durable PositionRecord"
+            )
+
+        existing.position_id = (
+            position_record.position_id
+        )
+
+        existing.status = (
+            OrderLifecycleState.FILLED.value
+        )
+
+        existing.updated_at = max(
+            existing.updated_at,
+            lifecycle_snapshot.updated_at,
+            broker_snapshot.updated_at,
+            managed_position.updated_at,
+        )
+
+        # Independent OrderRepository transaction.
+        self._order_repository.update(
+            existing
+        )
+
+        durable_order = (
+            self._order_repository.get(
+                intent.intent_id.value
+            )
+        )
+
+        if durable_order is None:
+            raise TradingStatePersistenceError(
+                "terminal durable order could not "
+                "be reloaded after persistence"
+            )
+
+        if (
+            durable_order.status
+            != OrderLifecycleState.FILLED.value
+        ):
+            raise TradingStatePersistenceError(
+                "terminal durable order did not persist "
+                "FILLED lifecycle"
+            )
+
+        if (
+            durable_order.position_id
+            != position_record.position_id
+        ):
+            raise TradingStatePersistenceError(
+                "terminal durable order did not persist "
+                "PositionRecord linkage"
+            )
+
+        if (
+            durable_order.filled_quantity
+            != position_record.original_quantity
+        ):
+            raise TradingStatePersistenceError(
+                "terminal durable order lost "
+                "authoritative fill quantity"
+            )
+
+        if (
+            durable_order.average_fill_price
+            != position_record.entry_price
+        ):
+            raise TradingStatePersistenceError(
+                "terminal durable order lost "
+                "authoritative average fill price"
+            )
 
     def _add_or_validate_signal(
         self,

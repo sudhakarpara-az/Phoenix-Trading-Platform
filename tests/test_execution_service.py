@@ -705,7 +705,9 @@ def test_same_signal_cannot_execute_twice() -> None:
 
 
 def test_unknown_broker_result_requires_reconciliation() -> None:
-    class UnknownBroker:
+    class UnknownBroker(
+        BrokerExecutionProvider
+    ):
         @property
         def broker_name(self) -> str:
             return "DHAN"
@@ -776,6 +778,8 @@ def test_unknown_broker_result_requires_reconciliation() -> None:
         is BrokerOrderStatus.UNKNOWN
     )
 
+    assert result.intent is not None
+
     assert (
         state_machine.get_state(
             result.intent.intent_id
@@ -806,4 +810,13 @@ def test_unknown_broker_result_requires_reconciliation() -> None:
     assert (
         record.state
         is IdempotencyState.SUBMITTED
+    )
+
+
+def test_order_state_machine_accessor_preserves_exact_instance() -> None:
+    service, _, state_machine = make_service()
+
+    assert (
+        service.order_state_machine
+        is state_machine
     )
