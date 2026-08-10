@@ -584,4 +584,7 @@ def test_container_public_exports() -> None:
         "build_dhan_recovery_provider",
         "build_recovery_state_restorer_binding",
         "build_recovery_foundation",
+        "PhoenixNotificationContainer",
+        "build_notification_foundation",
+        "build_notification_end_of_day",
     ]

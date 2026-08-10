@@ -308,6 +308,101 @@ def compose_recovery_foundation(
 
 
 
+
+# ============================================================
+# M11 ? Notifications & Operational Alerts
+# ============================================================
+
+from src.app.container import (
+    PhoenixNotificationContainer,
+    build_notification_foundation,
+    build_notification_end_of_day,
+)
+from src.config.env_loader import (
+    env,
+)
+from src.notifications.end_of_day_notifications import (
+    TradingDayEndOfDayNotificationCoordinator,
+)
+from src.notifications.telegram_channel import (
+    TelegramRequestSender,
+)
+
+
+def compose_notification_foundation(
+    *,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    telegram_enabled: bool,
+    telegram_bot_token: str | None = None,
+    telegram_chat_id: str | None = None,
+    telegram_request_sender: TelegramRequestSender | None = None,
+    telegram_timeout_seconds: float = 3.0,
+    queue_capacity: int = 256,
+) -> PhoenixNotificationContainer:
+    """
+    Compose M11 using environment-backed Telegram defaults.
+
+    Explicit credentials override environment values.
+
+    EnvironmentLoader properties read os.getenv() at access time.
+
+    Composition performs no outbound Telegram request.
+    """
+
+    resolved_bot_token = (
+        env.telegram_bot_token
+        if telegram_bot_token is None
+        else telegram_bot_token
+    )
+
+    resolved_chat_id = (
+        env.telegram_chat_id
+        if telegram_chat_id is None
+        else telegram_chat_id
+    )
+
+    return build_notification_foundation(
+        runtime_startup=runtime_startup,
+        telegram_enabled=telegram_enabled,
+        telegram_bot_token=(
+            resolved_bot_token
+        ),
+        telegram_chat_id=(
+            resolved_chat_id
+        ),
+        telegram_request_sender=(
+            telegram_request_sender
+        ),
+        telegram_timeout_seconds=(
+            telegram_timeout_seconds
+        ),
+        queue_capacity=queue_capacity,
+    )
+
+
+
+
+def compose_notification_end_of_day(
+    *,
+    notification:
+        PhoenixNotificationContainer,
+    end_of_day_coordinator:
+        TradingDayEndOfDayCoordinator,
+) -> TradingDayEndOfDayNotificationCoordinator:
+    """
+    Compose M11 notification behavior around the exact existing
+    M10 end-of-day coordinator.
+    """
+
+    return build_notification_end_of_day(
+        notification=notification,
+        end_of_day_coordinator=(
+            end_of_day_coordinator
+        ),
+    )
+
+
+
 __all__ = [
     "compose_dhan_foundation",
     "compose_exit_runtime_foundation",
@@ -318,4 +413,6 @@ __all__ = [
     "compose_dhan_recovery_provider",
     "compose_recovery_state_restorer_binding",
     "compose_recovery_foundation",
+    "compose_notification_foundation",
+    "compose_notification_end_of_day",
 ]
