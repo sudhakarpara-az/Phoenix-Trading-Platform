@@ -88,6 +88,7 @@ from src.risk.risk_types import (
 )
 
 from src.market.market_types import MarketTick
+from src.market.tick_processor import TickProcessor
 from src.option_selection.option_types import (
     OptionType,
     SelectedOption,
@@ -2684,4 +2685,152 @@ __all__ += [
     "TradingDayTickRuntimeCoordinator",
     "TradingDayTickRuntimeError",
     "TradingDayTickRuntimeResult",
+]
+
+
+class TradingDayMarketIngressError(
+    RuntimeError
+):
+    """
+    T14 raw-market ingress could not safely hand a normalized
+    market tick to the trading-day runtime.
+    """
+
+
+class TradingDayMarketIngressHandler:
+    """
+    Thin M10 application boundary between the existing M02 raw
+    market-message path and TradingDayTickRuntimeCoordinator.
+
+    Flow:
+
+        raw Dhan message
+            ->
+        TickProcessor.process()
+            ->
+        MarketTick | None
+            ->
+        TradingDayTickRuntimeCoordinator.process_tick()
+
+    Ownership remains unchanged:
+
+        M02:
+            raw-message normalization and MarketDataService
+            publication.
+
+        M10 application runtime:
+            selected-option monitoring, M04 signal processing,
+            risk/account gating and M06 entry execution.
+
+    This handler deliberately does not publish MARKET_TICK onto
+    RuntimeEventBus. RuntimeEventAuditSubscriber may subscribe to
+    every RuntimeEventType, so high-frequency market ticks must
+    not become durable audit events merely to reach M10.
+
+    MessageDispatcher expects Callable[[Any], None], therefore
+    this handler intentionally returns None. Trading-runtime
+    failures are not swallowed; they propagate to the existing
+    Dhan adapter boundary so market/runtime failures remain
+    visible and fail closed.
+    """
+
+    def __init__(
+        self,
+        *,
+        tick_processor: TickProcessor,
+        tick_runtime:
+            TradingDayTickRuntimeCoordinator,
+        dry_run: bool,
+    ) -> None:
+        if not isinstance(
+            tick_processor,
+            TickProcessor,
+        ):
+            raise TypeError(
+                "tick_processor must be a TickProcessor"
+            )
+
+        if not isinstance(
+            tick_runtime,
+            TradingDayTickRuntimeCoordinator,
+        ):
+            raise TypeError(
+                "tick_runtime must be a "
+                "TradingDayTickRuntimeCoordinator"
+            )
+
+        if type(dry_run) is not bool:
+            raise TypeError(
+                "dry_run must be bool"
+            )
+
+        self._tick_processor = tick_processor
+        self._tick_runtime = tick_runtime
+        self._dry_run = dry_run
+
+    @property
+    def tick_processor(
+        self,
+    ) -> TickProcessor:
+        return self._tick_processor
+
+    @property
+    def tick_runtime(
+        self,
+    ) -> TradingDayTickRuntimeCoordinator:
+        return self._tick_runtime
+
+    @property
+    def dry_run(
+        self,
+    ) -> bool:
+        return self._dry_run
+
+    def __call__(
+        self,
+        message: Any,
+    ) -> None:
+        """
+        Normalize and route one raw market-feed message.
+
+        Non-price/control packets are routine M02 traffic and
+        terminate normally when TickProcessor returns None.
+        """
+
+        tick = self._tick_processor.process(
+            message
+        )
+
+        if tick is None:
+            return
+
+        if not isinstance(
+            tick,
+            MarketTick,
+        ):
+            raise TradingDayMarketIngressError(
+                "TickProcessor returned invalid "
+                "market tick result"
+            )
+
+        result = (
+            self._tick_runtime
+            .process_tick(
+                tick,
+                dry_run=self._dry_run,
+            )
+        )
+
+        if not isinstance(
+            result,
+            TradingDayTickRuntimeResult,
+        ):
+            raise TradingDayMarketIngressError(
+                "tick runtime returned invalid result"
+            )
+
+
+__all__ += [
+    "TradingDayMarketIngressError",
+    "TradingDayMarketIngressHandler",
 ]
