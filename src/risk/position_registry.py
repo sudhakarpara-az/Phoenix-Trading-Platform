@@ -26,6 +26,9 @@ from src.risk.risk_types import (
     ManagedPositionState,
     PositionRiskId,
 )
+from src.strategy.strategy_types import (
+    EntryLevel,
+)
 
 
 class DuplicatePositionError(RuntimeError):

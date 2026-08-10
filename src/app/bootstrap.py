@@ -403,6 +403,53 @@ def compose_notification_end_of_day(
 
 
 
+
+# ============================================================
+# M12 ? Trade Journal, Reporting & Analytics
+# ============================================================
+
+from src.app.container import (
+    PhoenixReportingContainer,
+    build_reporting_end_of_day,
+    build_reporting_foundation,
+)
+from src.reporting.end_of_day_reporting import (
+    TradingDayEndOfDayReportingCoordinator,
+)
+
+
+def compose_reporting_foundation(
+    *,
+    persistence: PhoenixPersistenceContainer,
+) -> PhoenixReportingContainer:
+    """
+    Compose M12 on the exact supplied persistence graph.
+    """
+
+    return build_reporting_foundation(
+        persistence=persistence
+    )
+
+def compose_reporting_end_of_day(
+    *,
+    reporting: PhoenixReportingContainer,
+    notification_end_of_day:
+        TradingDayEndOfDayNotificationCoordinator,
+) -> TradingDayEndOfDayReportingCoordinator:
+    """
+    Compose M12 reporting around the exact supplied M11 EOD
+    coordinator.
+    """
+
+    return build_reporting_end_of_day(
+        reporting=reporting,
+        notification_end_of_day=(
+            notification_end_of_day
+        ),
+    )
+
+
+
 __all__ = [
     "compose_dhan_foundation",
     "compose_exit_runtime_foundation",
@@ -415,4 +462,6 @@ __all__ = [
     "compose_recovery_foundation",
     "compose_notification_foundation",
     "compose_notification_end_of_day",
+    "compose_reporting_foundation",
+    "compose_reporting_end_of_day",
 ]

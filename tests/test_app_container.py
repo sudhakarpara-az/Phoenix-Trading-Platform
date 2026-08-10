@@ -587,4 +587,7 @@ def test_container_public_exports() -> None:
         "PhoenixNotificationContainer",
         "build_notification_foundation",
         "build_notification_end_of_day",
+        "PhoenixReportingContainer",
+        "build_reporting_foundation",
+        "build_reporting_end_of_day",
     ]

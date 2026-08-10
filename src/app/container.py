@@ -1960,6 +1960,157 @@ def build_notification_end_of_day(
 
 
 
+
+# ============================================================
+# M12 ? Trade Journal, Reporting & Analytics
+# ============================================================
+
+from src.database.repositories.sqlalchemy_repositories import (
+    SQLAlchemyPnLSnapshotRepository,
+)
+from src.reporting.audit_timeline import (
+    AuditTimelineService,
+)
+from src.reporting.daily_report import (
+    DailyTradeReportService,
+    TradingDateRuntimeQuery,
+)
+from src.reporting.end_of_day_reporting import (
+    TradingDayEndOfDayReportingCoordinator,
+)
+from src.reporting.report_serializer import (
+    ReportJsonSerializer,
+)
+from src.reporting.runtime_report import (
+    RuntimeTradeReportService,
+)
+from src.reporting.trade_analytics import (
+    TradeAnalyticsService,
+)
+from src.reporting.trade_journal import (
+    TradeJournalService,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class PhoenixReportingContainer:
+    """
+    Shared M12 reporting/read-model graph.
+    """
+
+    persistence: PhoenixPersistenceContainer
+
+    pnl_repository: SQLAlchemyPnLSnapshotRepository
+    trading_date_runtime_query: TradingDateRuntimeQuery
+
+    trade_journal: TradeJournalService
+    trade_analytics: TradeAnalyticsService
+
+    audit_timeline: AuditTimelineService
+
+    runtime_report: RuntimeTradeReportService
+    daily_report: DailyTradeReportService
+
+    report_serializer: ReportJsonSerializer
+
+
+def build_reporting_foundation(
+    *,
+    persistence: PhoenixPersistenceContainer,
+) -> PhoenixReportingContainer:
+    """
+    Build M12 over the existing exact persistence graph.
+
+    No new database/session owner is created.
+    """
+
+    pnl_repository = (
+        SQLAlchemyPnLSnapshotRepository(
+            sessions=persistence.sessions
+        )
+    )
+
+    trading_date_runtime_query = (
+        TradingDateRuntimeQuery(
+            sessions=persistence.sessions
+        )
+    )
+
+    trade_journal = TradeJournalService(
+        order_repository=(
+            persistence.order_repository
+        ),
+        order_fill_repository=(
+            persistence.order_fill_repository
+        ),
+        position_repository=(
+            persistence.position_repository
+        ),
+        pnl_repository=pnl_repository,
+    )
+
+    trade_analytics = TradeAnalyticsService()
+
+    audit_timeline = AuditTimelineService(
+        audit_repository=(
+            persistence.audit_repository
+        )
+    )
+
+    runtime_report = RuntimeTradeReportService(
+        runtime_repository=(
+            persistence.runtime_repository
+        ),
+        trade_journal=trade_journal,
+        trade_analytics=trade_analytics,
+        audit_timeline=audit_timeline,
+    )
+
+    daily_report = DailyTradeReportService(
+        runtime_query=(
+            trading_date_runtime_query
+        ),
+        runtime_report=runtime_report,
+    )
+
+    report_serializer = ReportJsonSerializer()
+
+    return PhoenixReportingContainer(
+        persistence=persistence,
+        pnl_repository=pnl_repository,
+        trading_date_runtime_query=(
+            trading_date_runtime_query
+        ),
+        trade_journal=trade_journal,
+        trade_analytics=trade_analytics,
+        audit_timeline=audit_timeline,
+        runtime_report=runtime_report,
+        daily_report=daily_report,
+        report_serializer=report_serializer,
+    )
+
+def build_reporting_end_of_day(
+    *,
+    reporting: PhoenixReportingContainer,
+    notification_end_of_day:
+        TradingDayEndOfDayNotificationCoordinator,
+) -> TradingDayEndOfDayReportingCoordinator:
+    """
+    Attach M12 reporting to the exact supplied M11 EOD boundary.
+
+    Neither M10 nor M11 is reconstructed.
+    """
+
+    return TradingDayEndOfDayReportingCoordinator(
+        end_of_day=notification_end_of_day,
+        daily_report=reporting.daily_report,
+    )
+
+
+
 __all__ = [
     "PhoenixDhanContainer",
     "PhoenixExitRuntimeContainer",
@@ -1978,4 +2129,7 @@ __all__ = [
     "PhoenixNotificationContainer",
     "build_notification_foundation",
     "build_notification_end_of_day",
+    "PhoenixReportingContainer",
+    "build_reporting_foundation",
+    "build_reporting_end_of_day",
 ]
