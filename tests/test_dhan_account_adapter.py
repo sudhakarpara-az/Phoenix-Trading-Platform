@@ -67,6 +67,34 @@ class FakeDhanClient:
 
         self.fund_error = None
 
+        self.position_calls = 0
+        self.position_error = None
+        self.position_response = []
+
+        self.order_calls = 0
+        self.order_error = None
+        self.order_response = []
+
+    def get_positions(
+        self,
+    ):
+        self.position_calls += 1
+
+        if self.position_error is not None:
+            raise self.position_error
+
+        return self.position_response
+
+    def get_order_list(
+        self,
+    ):
+        self.order_calls += 1
+
+        if self.order_error is not None:
+            raise self.order_error
+
+        return self.order_response
+
     def get_fund_limits(
         self,
     ):
@@ -577,4 +605,381 @@ def test_requested_account_mismatch_rejected():
                 "OTHER"
             ),
             requested_at=NOW,
+        )
+
+
+# ============================================================
+# Broker-wide trading state
+# ============================================================
+
+
+def test_empty_positions_are_flat():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_response = []
+
+    count = (
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+    )
+
+    assert count == 0
+    assert client.position_calls == 1
+
+
+def test_nonzero_long_and_short_positions_are_open():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_response = [
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "securityId": "41009",
+            "netQty": 65,
+        },
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "securityId": "41019",
+            "netQty": -65,
+        },
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "securityId": "41029",
+            "netQty": 0,
+        },
+    ]
+
+    count = (
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+    )
+
+    assert count == 2
+
+
+def test_wrapped_position_list_is_supported():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_response = {
+        "status": "success",
+        "data": [
+            {
+                "dhanClientId":
+                    ACCOUNT_ID.value,
+                "securityId": "41009",
+                "netQty": 65,
+            },
+        ],
+    }
+
+    assert (
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+        == 1
+    )
+
+
+def test_position_account_mismatch_fails_closed():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_response = [
+        {
+            "dhanClientId": "OTHER",
+            "securityId": "41009",
+            "netQty": 65,
+        },
+    ]
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match=(
+            "does not match configured account"
+        ),
+    ):
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_invalid_position_net_quantity_fails_closed():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_response = [
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "securityId": "41009",
+            "netQty": "not-a-number",
+        },
+    ]
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match="invalid netQty",
+    ):
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_position_api_exception_is_wrapped():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.position_error = RuntimeError(
+        "positions unavailable"
+    )
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match="positions request failed",
+    ):
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_empty_order_book_has_no_unresolved_orders():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_response = []
+
+    count = (
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+    )
+
+    assert count == 0
+    assert client.order_calls == 1
+
+
+def test_only_non_terminal_orders_are_unresolved():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    statuses = [
+        "TRANSIT",
+        "PENDING",
+        "OPEN",
+        "PART_TRADED",
+        "PARTIALLY_FILLED",
+        "TRADED",
+        "FILLED",
+        "REJECTED",
+        "CANCELLED",
+        "CANCELED",
+        "EXPIRED",
+    ]
+
+    client.order_response = [
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "orderId":
+                f"ORDER-{index}",
+            "orderStatus": status,
+        }
+        for index, status
+        in enumerate(statuses)
+    ]
+
+    assert (
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+        == 5
+    )
+
+
+def test_unknown_order_status_remains_unresolved():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_response = [
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "orderId": "ORDER-UNKNOWN",
+            "orderStatus":
+                "NEW_DHAN_STATUS",
+        },
+    ]
+
+    assert (
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+        == 1
+    )
+
+
+def test_wrapped_order_list_is_supported():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_response = {
+        "status": "success",
+        "data": [
+            {
+                "dhanClientId":
+                    ACCOUNT_ID.value,
+                "orderId": "ORDER-001",
+                "orderStatus": "PENDING",
+            },
+            {
+                "dhanClientId":
+                    ACCOUNT_ID.value,
+                "orderId": "ORDER-002",
+                "orderStatus": "TRADED",
+            },
+        ],
+    }
+
+    assert (
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+        == 1
+    )
+
+
+def test_order_missing_status_fails_closed():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_response = [
+        {
+            "dhanClientId":
+                ACCOUNT_ID.value,
+            "orderId": "ORDER-001",
+        },
+    ]
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match="missing orderStatus",
+    ):
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_order_account_mismatch_fails_closed():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_response = [
+        {
+            "dhanClientId": "OTHER",
+            "orderId": "ORDER-001",
+            "orderStatus": "PENDING",
+        },
+    ]
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match=(
+            "does not match configured account"
+        ),
+    ):
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_order_api_exception_is_wrapped():
+    adapter, client, _ = (
+        make_adapter()
+    )
+
+    client.order_error = RuntimeError(
+        "orders unavailable"
+    )
+
+    with pytest.raises(
+        DhanAccountAdapterError,
+        match="order-book request failed",
+    ):
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=NOW,
+        )
+
+
+def test_broker_wide_requested_at_must_be_datetime():
+    adapter, _, _ = (
+        make_adapter()
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "requested_at must be a datetime"
+        ),
+    ):
+        adapter.fetch_open_position_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=None,
+        )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "requested_at must be a datetime"
+        ),
+    ):
+        adapter.fetch_unresolved_order_count(
+            broker=BrokerType.DHAN,
+            account_id=ACCOUNT_ID,
+            requested_at=None,
         )

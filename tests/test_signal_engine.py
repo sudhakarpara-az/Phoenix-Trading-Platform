@@ -493,3 +493,70 @@ def test_same_level_on_different_contracts_can_generate_signals_independently() 
 
     assert second.signal.level is EntryLevel.K5
     assert second.signal.is_reentry is False
+
+
+
+def test_released_signal_preserves_duplicate_suppression_window() -> None:
+    engine = make_engine(
+        suppression_seconds=5
+    )
+
+    start = datetime(
+        2026,
+        8,
+        7,
+        10,
+        0,
+        0,
+    )
+
+    first = engine.process(
+        event=make_event(
+            timestamp=start
+        ),
+        direction=SignalDirection.CALL,
+        context=make_context(),
+    )
+
+    assert first.accepted is True
+    assert first.signal is not None
+
+    assert (
+        engine.release_signal_lock(
+            first.signal
+        )
+        is True
+    )
+
+    immediate_retry = engine.process(
+        event=make_event(
+            timestamp=(
+                start
+                + timedelta(seconds=1)
+            )
+        ),
+        direction=SignalDirection.CALL,
+        context=make_context(),
+    )
+
+    assert immediate_retry.accepted is False
+
+    assert (
+        immediate_retry.reason
+        is SignalEngineReason.DUPLICATE
+    )
+
+    after_window = engine.process(
+        event=make_event(
+            timestamp=(
+                start
+                + timedelta(seconds=5)
+            )
+        ),
+        direction=SignalDirection.CALL,
+        context=make_context(),
+    )
+
+    assert after_window.accepted is True
+    assert after_window.signal is not None
+    assert after_window.signal.is_reentry is False

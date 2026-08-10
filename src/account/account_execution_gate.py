@@ -168,6 +168,21 @@ class AccountExecutionSafetyGate:
         return self._account_id
 
     @property
+    def entry_execution(
+        self,
+    ) -> EntryExecutionProvider:
+        """
+        Return the exact M06-facing entry execution provider
+        owned by this M09 gate.
+
+        T14 uses this read-only boundary to prove that the
+        adapter used for pre-gate sizing is the same adapter
+        M09 delegates to after account approval.
+        """
+
+        return self._entry_execution
+
+    @property
     def last_result(
         self,
     ) -> AccountGatedEntryResult | None:

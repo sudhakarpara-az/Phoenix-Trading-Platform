@@ -17,7 +17,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Protocol
+from typing import (
+    TYPE_CHECKING,
+    Protocol,
+)
+
+if TYPE_CHECKING:
+    from src.database.schema import (
+        OrderRecord,
+        PositionRecord,
+        RuntimeSessionRecord,
+    )
 
 from src.runtime.recovery_types import (
     BrokerRecoveryOrderState,
@@ -42,7 +52,7 @@ class RecoveryRuntimeRepository(Protocol):
     def latest_for_trading_date(
         self,
         trading_date: date,
-    ):
+    ) -> RuntimeSessionRecord | None:
         ...
 
 
@@ -50,7 +60,10 @@ class RecoveryOrderRepository(Protocol):
     def list_open_orders(
         self,
         runtime_id: str,
-    ):
+    ) -> tuple[
+        OrderRecord,
+        ...,
+    ]:
         ...
 
 
@@ -58,7 +71,10 @@ class RecoveryPositionRepository(Protocol):
     def list_open_positions(
         self,
         runtime_id: str,
-    ):
+    ) -> tuple[
+        PositionRecord,
+        ...,
+    ]:
         ...
 
 
@@ -108,6 +124,27 @@ class StartupRecoveryService:
     # ========================================================
     # Discovery
     # ========================================================
+
+    @property
+    def broker_provider(
+        self,
+    ) -> BrokerRecoveryProvider:
+        """
+        Return the exact broker-truth provider owned by recovery.
+        """
+
+        return self._broker_provider
+
+
+    @property
+    def state_restorer(
+        self,
+    ) -> RecoveryStateRestorer:
+        """
+        Return the exact state-restorer boundary owned by recovery.
+        """
+
+        return self._state_restorer
 
     def build_plan(
         self,
@@ -223,12 +260,6 @@ class StartupRecoveryService:
             )
         )
 
-        positions = (
-            self._position_repository
-            .list_open_positions(
-                source_runtime_id
-            )
-        )
 
         # ----------------------------------------------------
         # Orders
@@ -369,6 +400,18 @@ class StartupRecoveryService:
         # to the same option contract, so compare AGGREGATE
         # persisted exposure to broker net exposure first.
         # ----------------------------------------------------
+
+        # Order restoration may durably change PositionRecord exposure
+        # (especially a recovered SELL fill). Reload after every
+        # unresolved order has been restored so broker-position
+        # reconciliation uses current durable truth rather than
+        # a stale pre-order snapshot.
+        positions = (
+            self._position_repository
+            .list_open_positions(
+                source_runtime_id
+            )
+        )
 
         positions_by_security = defaultdict(
             list

@@ -53,6 +53,30 @@ class FilledPositionRiskInitializer:
             stop_loss_policy
         )
 
+    @property
+    def registry(
+        self,
+    ) -> PositionRegistry:
+        """
+        Return the exact M07 registry owned by this initializer.
+        """
+
+        return self._registry
+
+    @property
+    def stop_loss_policy(
+        self,
+    ) -> StopLossPolicy:
+        """
+        Return the exact stop policy used when a fill becomes
+        a managed position.
+
+        T14 uses its configured risk_points for the conservative
+        pre-entry exposure check.
+        """
+
+        return self._stop_loss_policy
+
     def initialize(
         self,
         *,

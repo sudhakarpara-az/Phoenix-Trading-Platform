@@ -237,6 +237,16 @@ class DailyRiskManager:
         self._lock = RLock()
 
     @property
+    def registry(
+        self,
+    ) -> PositionRegistry:
+        """
+        Return the exact M07 registry used for daily-risk state.
+        """
+
+        return self._registry
+
+    @property
     def config(
         self,
     ) -> DailyRiskConfig:

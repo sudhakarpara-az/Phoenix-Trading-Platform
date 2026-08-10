@@ -82,7 +82,7 @@ class SignalEligibilityPolicy:
 
     Current rules:
         - Only K5/K6/K7 are valid entry levels.
-        - Trading begins at 09:20.
+        - Trading begins at 09:21 after the 09:20 candle closes.
         - No new signals at or after 15:15.
         - Strategy session must be MONITORING.
         - Trading must be enabled.
@@ -92,7 +92,7 @@ class SignalEligibilityPolicy:
 
     def __init__(
         self,
-        trading_start: time = time(9, 20),
+        trading_start: time = time(9, 21),
         trading_end: time = time(15, 15),
     ) -> None:
         if trading_end <= trading_start:

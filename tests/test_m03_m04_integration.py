@@ -162,10 +162,10 @@ def prepare_trading_day(pipeline):
     """
     Build the completed 09:15-09:16 reference candle,
     calculate KS levels, and then advance the session to
-    the existing monitoring_start boundary.
+    09:21 after the completed 09:20 one-minute candle.
 
-    During PRE-M10-C02, reference-candle completion and
-    monitoring activation are deliberately separate.
+    Reference-candle completion and monitoring activation remain
+    deliberately separate lifecycle boundaries.
     """
 
     session = pipeline["session"]
@@ -289,9 +289,8 @@ def prepare_trading_day(pipeline):
         is StrategySessionState.LEVELS_READY
     )
 
-    # Preserve the existing C02 monitoring_start boundary.
-    # The final completed-09:20-candle / ~09:21 activation
-    # correction is handled separately.
+    # Wait for the entire 09:20 one-minute candle to close.
+    # Monitoring becomes eligible at exactly 09:21.
     assert (
         session.update(
             datetime(
@@ -299,7 +298,7 @@ def prepare_trading_day(pipeline):
                 8,
                 7,
                 9,
-                20,
+                21,
                 0,
             )
         )

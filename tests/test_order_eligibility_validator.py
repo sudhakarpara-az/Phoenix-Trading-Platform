@@ -202,7 +202,27 @@ def test_platform_halt_is_rejected() -> None:
     )
 
 
-def test_exactly_0920_is_allowed() -> None:
+def test_exactly_0921_is_allowed() -> None:
+    validator = OrderEligibilityValidator()
+
+    result = validator.validate(
+        intent=make_intent(
+            created_at=datetime(
+                2026,
+                8,
+                7,
+                9,
+                21,
+                0,
+            )
+        ),
+        context=OrderEligibilityContext(),
+    )
+
+    assert result.eligible is True
+
+
+def test_before_0921_is_rejected() -> None:
     validator = OrderEligibilityValidator()
 
     result = validator.validate(
@@ -213,26 +233,6 @@ def test_exactly_0920_is_allowed() -> None:
                 7,
                 9,
                 20,
-                0,
-            )
-        ),
-        context=OrderEligibilityContext(),
-    )
-
-    assert result.eligible is True
-
-
-def test_before_0920_is_rejected() -> None:
-    validator = OrderEligibilityValidator()
-
-    result = validator.validate(
-        intent=make_intent(
-            created_at=datetime(
-                2026,
-                8,
-                7,
-                9,
-                19,
                 59,
             )
         ),

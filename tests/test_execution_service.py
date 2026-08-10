@@ -14,6 +14,10 @@ from src.execution.execution_types import (
     ExecutionMode,
     ExecutionResult,
 )
+from src.execution.idempotency_guard import (
+    IdempotencyKey,
+    IdempotencyState,
+)
 from src.execution.order_eligibility_validator import (
     OrderEligibilityContext,
     OrderEligibilityReason,
@@ -697,3 +701,122 @@ def test_same_signal_cannot_execute_twice() -> None:
     )
 
     assert broker.submit_count == 0
+
+
+
+def test_unknown_broker_result_requires_reconciliation() -> None:
+    class UnknownBroker(
+        BrokerExecutionProvider
+    ):
+        @property
+        def broker_name(self) -> str:
+            return "DHAN"
+
+        def submit_order(
+            self,
+            intent,
+        ):
+            return ExecutionResult(
+                intent_id=intent.intent_id,
+                success=False,
+                status=BrokerOrderStatus.UNKNOWN,
+                broker_reference=None,
+                submitted_at=NOW,
+                message="broker state unknown",
+            )
+
+        def cancel_order(
+            self,
+            broker_reference,
+        ):
+            raise AssertionError(
+                "cancel_order must not be called"
+            )
+
+        def get_order_status(
+            self,
+            broker_reference,
+        ):
+            raise AssertionError(
+                "get_order_status must not be called"
+            )
+
+    broker = UnknownBroker()
+
+    state_machine = OrderStateMachine()
+
+    service = ExecutionService(
+        pricing_policy=OrderPricingPolicy(),
+        quantity_policy=QuantityPolicy(),
+        eligibility_validator=(
+            OrderEligibilityValidator()
+        ),
+        state_machine=state_machine,
+        broker_provider=broker,
+        allow_live_orders=True,
+    )
+
+    signal = make_signal()
+    option = make_selected_option()
+
+    result = service.execute(
+        signal=signal,
+        selected_option=option,
+        quantity=option.lot_size,
+        execution_mode=ExecutionMode.LIVE,
+        requested_at=NOW,
+        context=OrderEligibilityContext(),
+    )
+
+    assert (
+        result.execution_result
+        is not None
+    )
+
+    assert (
+        result.execution_result.status
+        is BrokerOrderStatus.UNKNOWN
+    )
+
+    assert result.intent is not None
+
+    assert (
+        state_machine.get_state(
+            result.intent.intent_id
+        )
+        is OrderLifecycleState
+        .RECONCILIATION_REQUIRED
+    )
+
+    assert (
+        state_machine.is_terminal(
+            result.intent.intent_id
+        )
+        is False
+    )
+
+    key = IdempotencyKey.from_signal_id(
+        signal.signal_id
+    )
+
+    record = (
+        service.idempotency_guard.get(
+            key
+        )
+    )
+
+    assert record is not None
+
+    assert (
+        record.state
+        is IdempotencyState.SUBMITTED
+    )
+
+
+def test_order_state_machine_accessor_preserves_exact_instance() -> None:
+    service, _, state_machine = make_service()
+
+    assert (
+        service.order_state_machine
+        is state_machine
+    )

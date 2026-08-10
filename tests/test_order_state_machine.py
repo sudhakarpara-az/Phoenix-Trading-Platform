@@ -503,3 +503,179 @@ def test_clear() -> None:
     machine.clear()
 
     assert machine.count() == 0
+
+
+def test_reconciliation_required_is_non_terminal() -> None:
+    machine = OrderStateMachine()
+    intent = make_intent()
+
+    machine.register(intent)
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.VALIDATED,
+        NOW + timedelta(seconds=1),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.SUBMITTED,
+        NOW + timedelta(seconds=2),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        (
+            OrderLifecycleState
+            .RECONCILIATION_REQUIRED
+        ),
+        NOW + timedelta(seconds=3),
+    )
+
+    assert (
+        machine.get_state(
+            intent.intent_id
+        )
+        is OrderLifecycleState
+        .RECONCILIATION_REQUIRED
+    )
+
+    assert (
+        machine.is_terminal(
+            intent.intent_id
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "resolved_state",
+    [
+        OrderLifecycleState.PENDING,
+        OrderLifecycleState.OPEN,
+        OrderLifecycleState.PARTIALLY_FILLED,
+        OrderLifecycleState.FILLED,
+        OrderLifecycleState.REJECTED,
+        OrderLifecycleState.CANCELLED,
+        OrderLifecycleState.FAILED,
+    ],
+)
+def test_reconciliation_required_can_resolve_to_broker_truth(
+    resolved_state,
+) -> None:
+    machine = OrderStateMachine()
+    intent = make_intent()
+
+    machine.register(intent)
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.VALIDATED,
+        NOW + timedelta(seconds=1),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.SUBMITTED,
+        NOW + timedelta(seconds=2),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        (
+            OrderLifecycleState
+            .RECONCILIATION_REQUIRED
+        ),
+        NOW + timedelta(seconds=3),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        resolved_state,
+        NOW + timedelta(seconds=4),
+    )
+
+    assert (
+        machine.get_state(
+            intent.intent_id
+        )
+        is resolved_state
+    )
+
+
+
+@pytest.mark.parametrize(
+    "source_state",
+    [
+        OrderLifecycleState.PENDING,
+        OrderLifecycleState.OPEN,
+        OrderLifecycleState.PARTIALLY_FILLED,
+    ],
+)
+def test_unresolved_submitted_order_can_require_reconciliation(
+    source_state,
+) -> None:
+    machine = OrderStateMachine()
+    intent = make_intent()
+
+    machine.register(intent)
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.VALIDATED,
+        NOW + timedelta(seconds=1),
+    )
+
+    machine.transition(
+        intent.intent_id,
+        OrderLifecycleState.SUBMITTED,
+        NOW + timedelta(seconds=2),
+    )
+
+    if source_state is not OrderLifecycleState.PENDING:
+        machine.transition(
+            intent.intent_id,
+            OrderLifecycleState.PENDING,
+            NOW + timedelta(seconds=3),
+        )
+
+    if source_state is OrderLifecycleState.OPEN:
+        machine.transition(
+            intent.intent_id,
+            OrderLifecycleState.OPEN,
+            NOW + timedelta(seconds=4),
+        )
+
+    elif (
+        source_state
+        is OrderLifecycleState.PARTIALLY_FILLED
+    ):
+        machine.transition(
+            intent.intent_id,
+            OrderLifecycleState.PARTIALLY_FILLED,
+            NOW + timedelta(seconds=4),
+        )
+
+    machine.transition(
+        intent.intent_id,
+        (
+            OrderLifecycleState
+            .RECONCILIATION_REQUIRED
+        ),
+        NOW + timedelta(seconds=5),
+    )
+
+    assert (
+        machine.get_state(
+            intent.intent_id
+        )
+        is OrderLifecycleState
+        .RECONCILIATION_REQUIRED
+    )
+
+    assert (
+        machine.is_terminal(
+            intent.intent_id
+        )
+        is False
+    )

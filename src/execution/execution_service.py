@@ -25,6 +25,7 @@ from threading import RLock
 
 from src.execution.broker_execution_provider import (
     BrokerExecutionProvider,
+    BrokerOrderSnapshot,
 )
 from src.execution.dry_run_executor import (
     DryRunExecutor,
@@ -41,6 +42,7 @@ from src.execution.execution_types import (
 from src.execution.idempotency_guard import (
     DuplicateOrderGuard,
     IdempotencyKey,
+    IdempotencyState,
 )
 from src.execution.order_eligibility_validator import (
     OrderEligibilityContext,
@@ -67,6 +69,34 @@ from src.signals.signal_types import (
 )
 
 
+class EntrySubmissionUncertainError(RuntimeError):
+    """
+    LIVE entry submission crossed the broker boundary but Phoenix
+    did not receive a normalized ExecutionResult.
+
+    The exact immutable OrderIntent is retained so application
+    orchestration can preserve the pending/reconciliation context
+    without reconstructing execution identity.
+
+    M06 idempotency remains SUBMITTED until explicit broker
+    reconciliation proves a safe terminal outcome.
+    """
+
+    def __init__(
+        self,
+        *,
+        intent: OrderIntent,
+        cause: Exception,
+    ) -> None:
+        self.intent = intent
+        self.cause = cause
+
+        super().__init__(
+            str(cause)
+            or "LIVE entry broker submission outcome is uncertain"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionServiceResult:
     """
@@ -90,6 +120,38 @@ class ExecutionServiceResult:
         return (
             self.execution_result is not None
             and self.execution_result.success
+        )
+
+    @property
+    def broker_submission_attempted(
+        self,
+    ) -> bool:
+        """
+        True only when a LIVE broker submission was attempted
+        and M06 returned an ExecutionResult.
+
+        This is intentionally different from submitted:
+
+            submitted
+                means the broker result reported success.
+
+            broker_submission_attempted
+                means Phoenix crossed the LIVE broker boundary,
+                regardless of success/status.
+
+        Pre-broker rejection therefore returns False.
+
+        If the broker call itself raises before M06 can return a
+        result, callers must inspect the M06 idempotency record.
+        SUBMITTED means the broker boundary may have been crossed
+        and the M04 signal lock must be retained.
+        """
+
+        return (
+            self.intent is not None
+            and self.intent.execution_mode
+            is ExecutionMode.LIVE
+            and self.execution_result is not None
         )
 
 
@@ -140,6 +202,33 @@ class ExecutionService:
         return self._allow_live_orders
 
     @property
+    def pricing_policy(
+        self,
+    ) -> OrderPricingPolicy:
+        """
+        Return the exact pricing policy owned by this M06 service.
+
+        T14 runtime composition uses this read-only boundary so
+        account required-cash sizing and the eventual M06 order
+        cannot silently use different pricing configuration.
+        """
+
+        return self._pricing_policy
+
+    @property
+    def quantity_policy(
+        self,
+    ) -> QuantityPolicy:
+        """
+        Return the exact quantity policy owned by this M06 service.
+
+        T14 uses the same instance when calculating pre-execution
+        lot sizing for M07/M09 gates.
+        """
+
+        return self._quantity_policy
+
+    @property
     def dry_run_executor(
         self,
     ) -> DryRunExecutor:
@@ -150,6 +239,206 @@ class ExecutionService:
         self,
     ) -> DuplicateOrderGuard:
         return self._idempotency_guard
+
+    @property
+    def order_state_machine(
+        self,
+    ) -> OrderStateMachine:
+        """
+        Return the exact M06 order lifecycle state machine.
+
+        T14 persistence uses this read-only ownership boundary
+        after broker reconciliation so durable state reflects
+        the lifecycle already decided by M06 rather than
+        independently remapping broker status.
+        """
+
+        return self._state_machine
+
+    @property
+    def broker_provider(
+        self,
+    ) -> BrokerExecutionProvider:
+        """
+        Return the exact broker provider owned by M06.
+
+        T14 must reconcile an entry through the same broker
+        boundary that submitted the original order.
+        """
+
+        return self._broker_provider
+
+    def refresh_entry_order_status(
+        self,
+        *,
+        intent: OrderIntent,
+        execution_result: ExecutionResult,
+    ) -> BrokerOrderSnapshot:
+        """
+        Refresh one already-submitted LIVE entry from broker truth.
+
+        This method does NOT submit another order.
+
+        It:
+            - verifies the execution result belongs to the intent,
+            - queries the exact M06 broker provider,
+            - updates M06 OrderStateMachine when broker truth moves,
+            - completes idempotency after a proven full fill,
+            - releases submitted idempotency only after a proven
+              cancellation.
+
+        UNKNOWN remains RECONCILIATION_REQUIRED and therefore
+        non-terminal.
+        """
+
+        if (
+            execution_result.intent_id
+            != intent.intent_id
+        ):
+            raise ValueError(
+                "execution result does not belong "
+                "to supplied entry intent"
+            )
+
+        broker_reference = (
+            execution_result.broker_reference
+        )
+
+        if broker_reference is None:
+            raise ValueError(
+                "entry reconciliation requires "
+                "broker reference"
+            )
+
+        key = IdempotencyKey.from_signal_id(
+            intent.signal.signal_id
+        )
+
+        record = self._idempotency_guard.get(
+            key
+        )
+
+        if record is None:
+            raise RuntimeError(
+                "entry reconciliation requires "
+                "existing idempotency record"
+            )
+
+        if (
+            record.intent_id
+            != intent.intent_id.value
+        ):
+            raise RuntimeError(
+                "idempotency intent does not match "
+                "entry intent"
+            )
+
+        snapshot = (
+            self._broker_provider
+            .get_order_status(
+                broker_reference
+            )
+        )
+
+        if (
+            snapshot.broker_reference
+            != broker_reference
+        ):
+            raise RuntimeError(
+                "broker snapshot reference does not match "
+                "entry execution reference"
+            )
+
+        if (
+            snapshot.quantity
+            != intent.quantity
+        ):
+            raise RuntimeError(
+                "broker snapshot quantity does not match "
+                "entry intent quantity"
+            )
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.FILLED
+        ):
+            if (
+                snapshot.filled_quantity
+                != intent.quantity
+            ):
+                raise RuntimeError(
+                    "FILLED broker snapshot must prove "
+                    "full entry quantity"
+                )
+
+            if snapshot.average_price is None:
+                raise RuntimeError(
+                    "FILLED broker snapshot requires "
+                    "average fill price"
+                )
+
+        target_state = (
+            self._map_broker_status(
+                snapshot.status
+            )
+        )
+
+        current_state = (
+            self._state_machine
+            .get_state(
+                intent.intent_id
+            )
+        )
+
+        if current_state is not target_state:
+            if (
+                self._state_machine
+                .is_terminal(
+                    intent.intent_id
+                )
+            ):
+                raise RuntimeError(
+                    "terminal entry order conflicts with "
+                    "current broker truth"
+                )
+
+            self._state_machine.transition(
+                intent.intent_id,
+                target_state,
+                snapshot.updated_at,
+                message=snapshot.message,
+            )
+
+        record = self._idempotency_guard.get(
+            key
+        )
+
+        assert record is not None
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.FILLED
+            and record.state
+            is IdempotencyState.SUBMITTED
+        ):
+            self._idempotency_guard.mark_completed(
+                key=key,
+                changed_at=snapshot.updated_at,
+            )
+
+        elif (
+            snapshot.status
+            is BrokerOrderStatus.CANCELLED
+            and snapshot.filled_quantity == 0
+            and record.state
+            is IdempotencyState.SUBMITTED
+        ):
+            self._idempotency_guard.release_after_reconciliation(
+                key=key,
+                changed_at=snapshot.updated_at,
+            )
+
+        return snapshot
 
     def execute(
         self,
@@ -465,11 +754,37 @@ class ExecutionService:
             changed_at=requested_at,
         )
 
-        execution_result = (
-            self._broker_provider.submit_order(
-                intent
+        try:
+            execution_result = (
+                self._broker_provider.submit_order(
+                    intent
+                )
             )
-        )
+
+        except Exception as exc:
+            # The broker may have accepted the order before the
+            # transport/provider failure became visible locally.
+            #
+            # Never release the SUBMITTED idempotency reservation.
+            # Preserve the exact intent for T14 recovery and make
+            # the M06 lifecycle ambiguity explicit.
+            self._state_machine.transition(
+                intent.intent_id,
+                (
+                    OrderLifecycleState
+                    .RECONCILIATION_REQUIRED
+                ),
+                requested_at,
+                message=(
+                    str(exc)
+                    or "LIVE broker submission outcome uncertain"
+                ),
+            )
+
+            raise EntrySubmissionUncertainError(
+                intent=intent,
+                cause=exc,
+            ) from exc
 
         self._apply_execution_result(
             intent=intent,
@@ -591,11 +906,42 @@ class ExecutionService:
                 OrderLifecycleState.CANCELLED
             ),
             BrokerOrderStatus.UNKNOWN: (
-                OrderLifecycleState.FAILED
+                OrderLifecycleState
+                .RECONCILIATION_REQUIRED
             ),
         }
 
         return mapping[status]
+
+    def restore_sequence_floor(
+        self,
+        floor: int,
+    ) -> int:
+        """
+        Restore the minimum already-consumed BUY intent
+        sequence for the trading day.
+
+        Recovery is monotonic and idempotent. It may advance
+        the sequence but can never move it backwards.
+        """
+
+        if type(floor) is not int:
+            raise TypeError(
+                "sequence floor must be an integer"
+            )
+
+        if floor < 0:
+            raise ValueError(
+                "sequence floor cannot be negative"
+            )
+
+        with self._sequence_lock:
+            self._sequence = max(
+                self._sequence,
+                floor,
+            )
+
+            return self._sequence
 
     def _next_intent_id(
         self,

@@ -8,6 +8,7 @@ from src.execution.broker_execution_provider import (
     BrokerOrderSnapshot,
 )
 from src.execution.execution_service import (
+    EntrySubmissionUncertainError,
     ExecutionService,
 )
 from src.execution.execution_types import (
@@ -541,9 +542,9 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
     )
 
     with pytest.raises(
-        RuntimeError,
+        EntrySubmissionUncertainError,
         match="simulated network timeout",
-    ):
+    ) as exc_info:
         service.execute(
             signal=signal,
             selected_option=make_option(),
@@ -552,6 +553,36 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
             requested_at=NOW,
             context=OrderEligibilityContext(),
         )
+
+    uncertain = exc_info.value
+
+    assert (
+        uncertain.intent.signal.signal_id
+        == signal.signal_id
+    )
+
+    assert (
+        uncertain.intent.selected_option.security_id
+        == make_option().security_id
+    )
+
+    assert isinstance(
+        uncertain.cause,
+        RuntimeError,
+    )
+
+    assert (
+        str(uncertain.cause)
+        == "simulated network timeout"
+    )
+
+    assert (
+        state_machine.get_state(
+            uncertain.intent.intent_id
+        )
+        is OrderLifecycleState
+        .RECONCILIATION_REQUIRED
+    )
 
     key = IdempotencyKey.from_signal_id(
         signal.signal_id
@@ -562,6 +593,11 @@ def test_entry_broker_exception_keeps_idempotency_blocked() -> None:
     )
 
     assert record is not None
+
+    assert (
+        record.intent_id
+        == uncertain.intent.intent_id.value
+    )
 
     assert (
         record.state
@@ -860,8 +896,14 @@ def test_cancel_failure_blocks_force_exit_replacement() -> None:
 
     assert result.force_exit_plan is None
 
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
     assert (
-        guard.get(key).state
+        guard_record.state
         is IdempotencyState.SUBMITTED
     )
 
@@ -912,8 +954,14 @@ def test_unconfirmed_cancellation_blocks_replacement() -> None:
 
     assert result.force_exit_plan is None
 
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
     assert (
-        guard.get(key).state
+        guard_record.state
         is IdempotencyState.SUBMITTED
     )
 
@@ -967,8 +1015,14 @@ def test_target_fill_during_cancel_race_blocks_second_sell() -> None:
     assert result.remaining_quantity == 0
     assert result.force_exit_plan is None
 
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
     assert (
-        guard.get(key).state
+        guard_record.state
         is IdempotencyState.COMPLETED
     )
 
@@ -1034,8 +1088,14 @@ def test_partial_fill_replacement_uses_final_broker_quantity() -> None:
         == 35
     )
 
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
     assert (
-        guard.get(key).state
+        guard_record.state
         is IdempotencyState.RELEASED
     )
 
@@ -1095,3 +1155,377 @@ def test_wrong_exit_intent_position_is_rejected() -> None:
 
     assert provider.status_calls == 0
     assert provider.cancel_calls == 0
+
+
+class ScopedReconciliationBroker(
+    ExitExecutionProvider
+):
+    """
+    Broker double whose exit-order quantity can be smaller
+    than the historical FilledPosition quantity.
+    """
+
+    def __init__(
+        self,
+        *,
+        order_quantity: int,
+        first_status: BrokerOrderStatus,
+        first_filled: int,
+        final_status: BrokerOrderStatus,
+        final_filled: int,
+    ) -> None:
+        self.order_quantity = (
+            order_quantity
+        )
+
+        self.first_status = (
+            first_status
+        )
+
+        self.first_filled = (
+            first_filled
+        )
+
+        self.final_status = (
+            final_status
+        )
+
+        self.final_filled = (
+            final_filled
+        )
+
+        self.status_calls = 0
+        self.cancel_calls = 0
+
+    @property
+    def broker_name(
+        self,
+    ) -> str:
+        return "FAKE"
+
+    def submit_exit(
+        self,
+        intent: ExitOrderIntent,
+    ) -> ExitExecutionResult:
+        raise NotImplementedError
+
+    def cancel_exit(
+        self,
+        broker_reference:
+            BrokerOrderReference,
+    ) -> ExitCancellationResult:
+        self.cancel_calls += 1
+
+        return ExitCancellationResult(
+            broker_reference=(
+                broker_reference
+            ),
+            success=True,
+            status=(
+                BrokerOrderStatus.CANCELLED
+            ),
+            cancelled_at=FORCE_TIME,
+        )
+
+    def get_exit_status(
+        self,
+        broker_reference:
+            BrokerOrderReference,
+    ) -> ExitOrderSnapshot:
+        self.status_calls += 1
+
+        if self.status_calls == 1:
+            status = self.first_status
+            filled_quantity = (
+                self.first_filled
+            )
+
+        else:
+            status = self.final_status
+            filled_quantity = (
+                self.final_filled
+            )
+
+        return ExitOrderSnapshot(
+            broker_reference=(
+                broker_reference
+            ),
+            status=status,
+            quantity=(
+                self.order_quantity
+            ),
+            filled_quantity=(
+                filled_quantity
+            ),
+            average_price=(
+                126.0
+                if filled_quantity > 0
+                else None
+            ),
+            updated_at=FORCE_TIME,
+        )
+
+
+def test_force_exit_reconciliation_uses_active_sell_quantity_scope() -> None:
+    """
+    Original entry quantity can be larger than the currently
+    active SELL.
+
+    Example:
+
+        original position = 65
+        active SELL       = 35
+        final SELL fill   = 15
+
+    Replacement must be 20, never 50.
+    """
+
+    position = make_filled_position(
+        quantity=65
+    )
+
+    guard = DuplicateOrderGuard()
+
+    key, original_intent = (
+        make_active_exit_context(
+            guard,
+            position,
+        )
+    )
+
+    active_intent = ExitOrderIntent(
+        intent_id=(
+            original_intent.intent_id
+        ),
+        position_id=(
+            original_intent.position_id
+        ),
+        security_id=(
+            original_intent.security_id
+        ),
+        symbol=(
+            original_intent.symbol
+        ),
+        option_type=(
+            original_intent.option_type
+        ),
+        transaction_type=(
+            original_intent
+            .transaction_type
+        ),
+        order_type=(
+            original_intent.order_type
+        ),
+        quantity=35,
+        price=(
+            original_intent.price
+        ),
+        reason=(
+            original_intent.reason
+        ),
+        created_at=(
+            original_intent.created_at
+        ),
+    )
+
+    provider = (
+        ScopedReconciliationBroker(
+            order_quantity=35,
+            first_status=(
+                BrokerOrderStatus
+                .PARTIALLY_FILLED
+            ),
+            first_filled=10,
+            final_status=(
+                BrokerOrderStatus.CANCELLED
+            ),
+            final_filled=15,
+        )
+    )
+
+    service = ExitReconciliationService(
+        provider=provider,
+        exit_plan_builder=(
+            ExitPlanBuilder(
+                TargetBookingPolicy()
+            )
+        ),
+        duplicate_guard=guard,
+    )
+
+    reference = BrokerOrderReference(
+        broker_name="FAKE",
+        order_id="PARTIAL-SCOPE-EXIT",
+    )
+
+    result = (
+        service.reconcile_for_force_exit(
+            position=position,
+            active_exit_intent=(
+                active_intent
+            ),
+            broker_reference=reference,
+            requested_at=FORCE_TIME,
+        )
+    )
+
+    assert (
+        result.decision
+        is ExitReconciliationDecision
+        .FORCE_EXIT_READY
+    )
+
+    assert result.original_quantity == 35
+
+    assert result.filled_quantity == 15
+
+    assert result.remaining_quantity == 20
+
+    assert result.force_exit_plan is not None
+
+    assert (
+        result.force_exit_plan.quantity
+        == 20
+    )
+
+    assert provider.cancel_calls == 1
+    assert provider.status_calls == 2
+
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
+    assert (
+        guard_record.state
+        is IdempotencyState.RELEASED
+    )
+
+
+def test_force_exit_reconciliation_rejects_broker_quantity_mismatch() -> None:
+    """
+    Broker order truth must describe the same quantity as the
+    active SELL intent.
+
+    Phoenix must fail closed before cancellation or replacement
+    when those identities disagree.
+    """
+
+    position = make_filled_position(
+        quantity=65
+    )
+
+    guard = DuplicateOrderGuard()
+
+    key, original_intent = (
+        make_active_exit_context(
+            guard,
+            position,
+        )
+    )
+
+    active_intent = ExitOrderIntent(
+        intent_id=(
+            original_intent.intent_id
+        ),
+        position_id=(
+            original_intent.position_id
+        ),
+        security_id=(
+            original_intent.security_id
+        ),
+        symbol=(
+            original_intent.symbol
+        ),
+        option_type=(
+            original_intent.option_type
+        ),
+        transaction_type=(
+            original_intent
+            .transaction_type
+        ),
+        order_type=(
+            original_intent.order_type
+        ),
+        quantity=35,
+        price=(
+            original_intent.price
+        ),
+        reason=(
+            original_intent.reason
+        ),
+        created_at=(
+            original_intent.created_at
+        ),
+    )
+
+    provider = (
+        ScopedReconciliationBroker(
+            # Deliberate broker mismatch.
+            order_quantity=65,
+            first_status=(
+                BrokerOrderStatus.OPEN
+            ),
+            first_filled=0,
+            final_status=(
+                BrokerOrderStatus.CANCELLED
+            ),
+            final_filled=0,
+        )
+    )
+
+    service = ExitReconciliationService(
+        provider=provider,
+        exit_plan_builder=(
+            ExitPlanBuilder(
+                TargetBookingPolicy()
+            )
+        ),
+        duplicate_guard=guard,
+    )
+
+    result = (
+        service.reconcile_for_force_exit(
+            position=position,
+            active_exit_intent=(
+                active_intent
+            ),
+            broker_reference=(
+                BrokerOrderReference(
+                    broker_name="FAKE",
+                    order_id=(
+                        "WRONG-QUANTITY-EXIT"
+                    ),
+                )
+            ),
+            requested_at=FORCE_TIME,
+        )
+    )
+
+    assert (
+        result.decision
+        is ExitReconciliationDecision
+        .INVALID_EXIT_REFERENCE
+    )
+
+    assert result.original_quantity == 35
+    assert result.filled_quantity == 0
+    assert result.remaining_quantity == 35
+
+    assert result.force_exit_plan is None
+
+    # Fail closed BEFORE cancellation.
+    assert provider.status_calls == 1
+    assert provider.cancel_calls == 0
+
+    guard_record = guard.get(
+        key
+    )
+
+    assert guard_record is not None
+
+    assert (
+        guard_record.state
+        is IdempotencyState.SUBMITTED
+    )

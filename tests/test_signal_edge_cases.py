@@ -119,7 +119,7 @@ def make_event(
     )
 
 
-def test_signal_exactly_at_920_is_allowed() -> None:
+def test_signal_exactly_at_921_is_allowed() -> None:
     engine = make_engine()
 
     result = engine.process(
@@ -129,7 +129,7 @@ def test_signal_exactly_at_920_is_allowed() -> None:
                 8,
                 7,
                 9,
-                20,
+                21,
                 0,
             )
         ),
@@ -140,7 +140,7 @@ def test_signal_exactly_at_920_is_allowed() -> None:
     assert result.accepted is True
 
 
-def test_signal_one_second_before_920_is_rejected() -> None:
+def test_signal_one_second_before_921_is_rejected() -> None:
     engine = make_engine()
 
     result = engine.process(
@@ -150,7 +150,7 @@ def test_signal_one_second_before_920_is_rejected() -> None:
                 8,
                 7,
                 9,
-                19,
+                20,
                 59,
             )
         ),

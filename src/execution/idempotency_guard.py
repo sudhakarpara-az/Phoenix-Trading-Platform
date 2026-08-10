@@ -460,6 +460,59 @@ class DuplicateOrderGuard:
                 self._records
             )
 
+    def restore_record(
+        self,
+        record: IdempotencyRecord,
+    ) -> IdempotencyRecord:
+        """
+        Restore one durable idempotency snapshot during
+        startup recovery.
+
+        Identical replay is idempotent.
+
+        Any conflicting in-memory state fails closed instead
+        of silently replacing an already-established
+        execution guard.
+        """
+
+        if not isinstance(
+            record,
+            IdempotencyRecord,
+        ):
+            raise TypeError(
+                "record must be IdempotencyRecord"
+            )
+
+        if (
+            record.updated_at
+            < record.created_at
+        ):
+            raise ValueError(
+                "idempotency recovery updated_at "
+                "cannot be before created_at"
+            )
+
+        with self._lock:
+            existing = self._records.get(
+                record.key.value
+            )
+
+            if existing is not None:
+                if existing != record:
+                    raise RuntimeError(
+                        "conflicting idempotency "
+                        "recovery state: "
+                        f"{record.key.value}"
+                    )
+
+                return existing
+
+            self._records[
+                record.key.value
+            ] = record
+
+            return record
+
     def clear(self) -> None:
         """
         Controlled test/session reset helper.

@@ -255,6 +255,195 @@ class DhanAccountAdapter:
     # Connectivity
     # ========================================================
 
+    # ========================================================
+    # Broker-wide trading state
+    # ========================================================
+
+    def fetch_open_position_count(
+        self,
+        *,
+        broker: BrokerType,
+        account_id: BrokerAccountId,
+        requested_at: datetime,
+    ) -> int:
+        """
+        Return the number of Dhan account positions whose broker
+        net quantity is non-zero.
+
+        This is broker truth, not Phoenix M07 registry truth.
+
+        LONG and SHORT exposure both block end-of-day closure.
+        A zero net quantity is treated as closed irrespective of
+        historical buy/sell quantity on the row.
+        """
+
+        self._validate_requested_identity(
+            broker=broker,
+            account_id=account_id,
+        )
+
+        if not isinstance(
+            requested_at,
+            datetime,
+        ):
+            raise TypeError(
+                "requested_at must be a datetime"
+            )
+
+        try:
+            response = (
+                self._dhan_client
+                .get_positions()
+            )
+        except Exception as exc:
+            raise DhanAccountAdapterError(
+                "Dhan positions request failed: "
+                f"{exc}"
+            ) from exc
+
+        positions = self._extract_list_data(
+            response,
+            operation="positions",
+        )
+
+        open_count = 0
+
+        for index, position in enumerate(
+            positions
+        ):
+            if not isinstance(
+                position,
+                dict,
+            ):
+                raise DhanAccountAdapterError(
+                    "Dhan positions response contains "
+                    f"invalid item at index {index}"
+                )
+
+            operation = (
+                f"positions[{index}]"
+            )
+
+            response_account_id = (
+                self._required_text(
+                    position,
+                    "dhanClientId",
+                    operation=operation,
+                )
+            )
+
+            self._validate_dhan_account_id(
+                response_account_id
+            )
+
+            net_quantity = self._signed_int(
+                position,
+                "netQty",
+                operation=operation,
+            )
+
+            if net_quantity != 0:
+                open_count += 1
+
+        return open_count
+
+    def fetch_unresolved_order_count(
+        self,
+        *,
+        broker: BrokerType,
+        account_id: BrokerAccountId,
+        requested_at: datetime,
+    ) -> int:
+        """
+        Return the number of account-wide Dhan orders whose
+        latest broker status is not safely terminal.
+
+        Terminal broker states:
+            TRADED / FILLED
+            REJECTED
+            CANCELLED / CANCELED
+            EXPIRED
+
+        Known live states such as TRANSIT, PENDING, OPEN,
+        PART_TRADED and PARTIALLY_FILLED remain unresolved.
+
+        Any future/unknown non-empty Dhan status also remains
+        unresolved. Phoenix therefore fails closed when Dhan
+        introduces a status that this release does not yet know.
+        """
+
+        self._validate_requested_identity(
+            broker=broker,
+            account_id=account_id,
+        )
+
+        if not isinstance(
+            requested_at,
+            datetime,
+        ):
+            raise TypeError(
+                "requested_at must be a datetime"
+            )
+
+        try:
+            response = (
+                self._dhan_client
+                .get_order_list()
+            )
+        except Exception as exc:
+            raise DhanAccountAdapterError(
+                "Dhan order-book request failed: "
+                f"{exc}"
+            ) from exc
+
+        orders = self._extract_list_data(
+            response,
+            operation="order book",
+        )
+
+        unresolved_count = 0
+
+        for index, order in enumerate(
+            orders
+        ):
+            if not isinstance(
+                order,
+                dict,
+            ):
+                raise DhanAccountAdapterError(
+                    "Dhan order-book response contains "
+                    f"invalid item at index {index}"
+                )
+
+            operation = (
+                f"order book[{index}]"
+            )
+
+            response_account_id = (
+                self._required_text(
+                    order,
+                    "dhanClientId",
+                    operation=operation,
+                )
+            )
+
+            self._validate_dhan_account_id(
+                response_account_id
+            )
+
+            status = self._required_text(
+                order,
+                "orderStatus",
+                operation=operation,
+            )
+
+            if self._is_unresolved_order_status(
+                status
+            ):
+                unresolved_count += 1
+
+        return unresolved_count
+
     def check_connectivity(
         self,
         *,
@@ -374,6 +563,196 @@ class DhanAccountAdapter:
             )
 
         return data
+
+    @staticmethod
+    def _extract_list_data(
+        response: Any,
+        *,
+        operation: str,
+    ) -> list:
+        """
+        Normalize account-wide Dhan endpoints that return arrays.
+
+        Supports both raw arrays:
+
+            [{...}, {...}]
+
+        and SDK-style successful envelopes:
+
+            {
+                "status": "success",
+                "data": [{...}, {...}]
+            }
+
+        A small bounded wrapper depth is supported for parity
+        with the existing Dhan execution adapters.
+        """
+
+        current: Any = response
+
+        for _ in range(4):
+            if isinstance(
+                current,
+                list,
+            ):
+                return current
+
+            if not isinstance(
+                current,
+                dict,
+            ):
+                raise DhanAccountAdapterError(
+                    f"Dhan {operation} response "
+                    "must contain a list"
+                )
+
+            if (
+                current.get("errorCode")
+                or current.get("errorMessage")
+            ):
+                message = (
+                    current.get(
+                        "errorMessage"
+                    )
+                    or current.get(
+                        "errorCode"
+                    )
+                )
+
+                raise DhanAccountAdapterError(
+                    f"Dhan {operation} failed: "
+                    f"{message}"
+                )
+
+            status = current.get(
+                "status"
+            )
+
+            if status is not None:
+                normalized_status = (
+                    str(status)
+                    .strip()
+                    .lower()
+                )
+
+                if normalized_status not in {
+                    "success",
+                    "successful",
+                }:
+                    message = (
+                        current.get(
+                            "errorMessage"
+                        )
+                        or current.get(
+                            "remarks"
+                        )
+                        or status
+                    )
+
+                    raise DhanAccountAdapterError(
+                        f"Dhan {operation} failed: "
+                        f"{message}"
+                    )
+
+            if "data" not in current:
+                raise DhanAccountAdapterError(
+                    f"Dhan {operation} response "
+                    "missing list data"
+                )
+
+            current = current[
+                "data"
+            ]
+
+        raise DhanAccountAdapterError(
+            f"Dhan {operation} response exceeded "
+            "supported wrapper depth"
+        )
+
+    @staticmethod
+    def _signed_int(
+        data: dict,
+        key: str,
+        *,
+        operation: str,
+    ) -> int:
+        """
+        Read an integer that may legitimately be negative.
+
+        Dhan netQty is signed:
+            positive -> long exposure
+            negative -> short exposure
+            zero     -> flat
+        """
+
+        value = data.get(
+            key
+        )
+
+        if value is None:
+            raise DhanAccountAdapterError(
+                f"Dhan {operation} response "
+                f"missing {key}"
+            )
+
+        try:
+            result = Decimal(
+                str(value)
+            )
+        except (
+            InvalidOperation,
+            ValueError,
+            TypeError,
+        ) as exc:
+            raise DhanAccountAdapterError(
+                f"Dhan {operation} response "
+                f"contains invalid {key}"
+            ) from exc
+
+        if not result.is_finite():
+            raise DhanAccountAdapterError(
+                f"Dhan {operation} response "
+                f"contains invalid {key}"
+            )
+
+        integral = (
+            result.to_integral_value()
+        )
+
+        if result != integral:
+            raise DhanAccountAdapterError(
+                f"Dhan {operation} response "
+                f"contains non-integer {key}"
+            )
+
+        return int(
+            integral
+        )
+
+    @staticmethod
+    def _is_unresolved_order_status(
+        value: str,
+    ) -> bool:
+        """
+        Unknown broker states fail closed by remaining unresolved.
+        """
+
+        normalized = (
+            str(value)
+            .strip()
+            .upper()
+        )
+
+        terminal = {
+            "TRADED",
+            "FILLED",
+            "REJECTED",
+            "CANCELLED",
+            "CANCELED",
+            "EXPIRED",
+        }
+
+        return normalized not in terminal
 
     @staticmethod
     def _required_text(

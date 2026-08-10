@@ -39,12 +39,11 @@ def test_default_config() -> None:
         == time(9, 16)
     )
 
-    # Kept at the existing activation boundary during C02.
-    # Final completed-09:20-candle / ~09:21 coordination is
-    # handled separately.
+    # Monitoring begins only after the complete 09:20
+    # one-minute candle has closed.
     assert (
         config.monitoring_start
-        == time(9, 20)
+        == time(9, 21)
     )
 
     assert config.force_exit == time(15, 15)
@@ -204,7 +203,7 @@ def test_mark_levels_ready_at_monitoring_start_enters_monitoring() -> None:
     manager.update(
         dt(
             9,
-            20,
+            21,
             0,
         )
     )
@@ -217,7 +216,7 @@ def test_mark_levels_ready_at_monitoring_start_enters_monitoring() -> None:
     )
 
 
-def test_levels_ready_before_920_enters_monitoring_at_920() -> None:
+def test_levels_ready_before_921_enters_monitoring_at_921() -> None:
     manager = TradingSessionManager()
 
     manager.update(
@@ -233,7 +232,7 @@ def test_levels_ready_before_920_enters_monitoring_at_920() -> None:
     state = manager.update(
         dt(
             9,
-            20,
+            21,
             0,
         )
     )
@@ -259,7 +258,7 @@ def test_after_levels_ready_remains_monitoring() -> None:
     manager.update(
         dt(
             9,
-            20,
+            21,
         )
     )
 
@@ -291,7 +290,7 @@ def test_force_exit_at_1515() -> None:
     manager.update(
         dt(
             9,
-            20,
+            21,
         )
     )
 
@@ -407,7 +406,7 @@ def test_can_monitor_levels_only_after_levels_ready() -> None:
         manager.can_monitor_levels(
             dt(
                 9,
-                19,
+                20,
                 59,
             )
         )
@@ -418,7 +417,7 @@ def test_can_monitor_levels_only_after_levels_ready() -> None:
         manager.can_monitor_levels(
             dt(
                 9,
-                20,
+                21,
                 0,
             )
         )
@@ -441,7 +440,7 @@ def test_new_day_resets_levels_ready() -> None:
     manager.update(
         dt(
             9,
-            20,
+            21,
         )
     )
 
