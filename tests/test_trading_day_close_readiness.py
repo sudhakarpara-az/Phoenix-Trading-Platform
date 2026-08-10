@@ -5,6 +5,7 @@ No live Dhan request is made.
 """
 
 from datetime import datetime
+from typing import Any, cast
 
 import pytest
 
@@ -79,7 +80,7 @@ class StubEntryRuntime(
     @property
     def position_registry(
         self,
-    ):
+    ) -> Any:
         return self.registry
 
     @property
@@ -215,7 +216,10 @@ def test_invalid_entry_runtime_rejected():
         ),
     ):
         TradingDayCloseReadinessProvider(
-            entry_runtime=object(),
+            entry_runtime=cast(
+                TradingDayEntryRuntimeCoordinator,
+                object(),
+            ),
             account_adapter=account,
         )
 
@@ -229,7 +233,10 @@ def test_invalid_account_adapter_rejected():
     ):
         TradingDayCloseReadinessProvider(
             entry_runtime=runtime,
-            account_adapter=object(),
+            account_adapter=cast(
+                DhanAccountAdapter,
+                object(),
+            ),
         )
 
 
@@ -380,7 +387,10 @@ def test_non_datetime_rejected_before_inspection():
         ),
     ):
         provider.evaluate_close_readiness(
-            evaluated_at=None,
+            evaluated_at=cast(
+                datetime,
+                None,
+            ),
         )
 
     assert runtime.registry.calls == 0
