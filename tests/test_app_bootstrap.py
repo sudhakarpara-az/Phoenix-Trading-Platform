@@ -297,4 +297,6 @@ def test_bootstrap_public_exports() -> None:
         "compose_dhan_recovery_provider",
         "compose_recovery_state_restorer_binding",
         "compose_recovery_foundation",
+        "compose_notification_foundation",
+        "compose_notification_end_of_day",
     ]

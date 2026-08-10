@@ -1678,6 +1678,288 @@ def build_recovery_foundation(
 
 
 
+
+# ============================================================
+# M11 ? Notifications & Operational Alerts
+# ============================================================
+
+from src.notifications.daily_summary import (
+    DailyOperationalSummaryCollector,
+)
+from src.notifications.end_of_day_notifications import (
+    DailyOperationalSummaryDispatchService,
+    TradingDayEndOfDayNotificationCoordinator,
+)
+from src.notifications.notification_deduplicator import (
+    NotificationEventDeduplicator,
+)
+from src.notifications.notification_dispatcher import (
+    NotificationDispatcher,
+)
+from src.notifications.payload_formatter import (
+    NotificationPayloadFormatter,
+)
+from src.notifications.queued_channel import (
+    QueuedNotificationChannel,
+)
+from src.notifications.runtime_event_subscriber import (
+    RuntimeEventNotificationSubscriber,
+)
+from src.notifications.telegram_channel import (
+    TelegramNotificationChannel,
+    TelegramRequestSender,
+)
+from src.runtime.runtime_events import (
+    RuntimeEventType,
+)
+from src.runtime.runtime_types import (
+    RuntimeState,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class PhoenixNotificationContainer:
+    """
+    Shared M11 operational-notification graph.
+
+    Identity invariant:
+        subscriber binds to runtime_startup.event_bus exactly.
+
+    Network invariant:
+        RuntimeEventBus
+            ->
+        bounded queue
+            ->
+        Telegram worker.
+
+    Construction performs no Telegram HTTP request.
+    """
+
+    runtime_startup: PhoenixRuntimeStartupContainer
+
+    telegram_channel: TelegramNotificationChannel | None
+
+    queued_channel: QueuedNotificationChannel | None
+
+    dispatcher: NotificationDispatcher
+
+    deduplicator: NotificationEventDeduplicator
+
+    payload_formatter: NotificationPayloadFormatter
+
+    summary_collector: DailyOperationalSummaryCollector
+
+    summary_dispatcher: NotificationDispatcher
+
+    summary_service: DailyOperationalSummaryDispatchService
+
+    subscriber: RuntimeEventNotificationSubscriber
+
+    subscribed_event_types: tuple[
+        RuntimeEventType,
+        ...,
+    ]
+
+
+def build_notification_foundation(
+    *,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    telegram_enabled: bool,
+    telegram_bot_token: str = "",
+    telegram_chat_id: str = "",
+    telegram_request_sender: TelegramRequestSender | None = None,
+    telegram_timeout_seconds: float = 3.0,
+    queue_capacity: int = 256,
+) -> PhoenixNotificationContainer:
+    """
+    Build M11 on the exact M08/M10 RuntimeEventBus.
+
+    Telegram-enabled composition must occur while the runtime
+    orchestrator is still CREATED because the asynchronous
+    delivery worker becomes an orchestrator-owned component.
+
+    Registration occurs before event subscription so a failed
+    precondition/registration cannot leave a partial subscriber
+    side effect.
+    """
+
+    if type(telegram_enabled) is not bool:
+        raise TypeError(
+            "telegram_enabled must be bool"
+        )
+
+    telegram_channel: TelegramNotificationChannel | None = None
+
+    queued_channel: QueuedNotificationChannel | None = None
+
+    deduplicator = (
+        NotificationEventDeduplicator()
+    )
+
+    payload_formatter = (
+        NotificationPayloadFormatter()
+    )
+
+    summary_collector = (
+        DailyOperationalSummaryCollector(
+            runtime_id=(
+                runtime_startup
+                .orchestrator
+                .runtime_id
+            )
+        )
+    )
+
+    dispatcher = NotificationDispatcher()
+
+    subscribed_event_types: tuple[
+        RuntimeEventType,
+        ...,
+    ] = ()
+
+    if telegram_enabled:
+        if (
+            runtime_startup.orchestrator.state
+            is not RuntimeState.CREATED
+        ):
+            raise ValueError(
+                "notification runtime composition "
+                "requires orchestrator CREATED state"
+            )
+
+        telegram_channel = (
+            TelegramNotificationChannel(
+                bot_token=telegram_bot_token,
+                chat_id=telegram_chat_id,
+                request_sender=(
+                    telegram_request_sender
+                ),
+                timeout_seconds=(
+                    telegram_timeout_seconds
+                ),
+            )
+        )
+
+        queued_channel = (
+            QueuedNotificationChannel(
+                downstream=telegram_channel,
+                capacity=queue_capacity,
+            )
+        )
+
+        dispatcher = NotificationDispatcher(
+            channels=(
+                summary_collector,
+                queued_channel,
+            )
+        )
+
+        runtime_startup.orchestrator.register_component(
+            component=queued_channel,
+            order=0,
+            critical=False,
+        )
+
+        subscribed_event_types = (
+            RuntimeEventNotificationSubscriber(
+                dispatcher=dispatcher
+            ).event_types
+        )
+
+    summary_dispatcher = NotificationDispatcher()
+
+    if queued_channel is not None:
+        summary_dispatcher = (
+            NotificationDispatcher(
+                channels=(
+                    queued_channel,
+                )
+            )
+        )
+
+    summary_service = (
+        DailyOperationalSummaryDispatchService(
+            collector=summary_collector,
+            dispatcher=summary_dispatcher,
+            queued_channel=queued_channel,
+            enabled=(
+                queued_channel is not None
+            ),
+        )
+    )
+
+    subscriber = (
+        RuntimeEventNotificationSubscriber(
+            dispatcher=dispatcher,
+            deduplicator=deduplicator,
+            payload_formatter=(
+                payload_formatter
+            ),
+        )
+    )
+
+    if queued_channel is not None:
+        subscribed_event_types = (
+            subscriber.subscribe(
+                runtime_startup.event_bus
+            )
+        )
+
+    return PhoenixNotificationContainer(
+        runtime_startup=runtime_startup,
+        telegram_channel=telegram_channel,
+        queued_channel=queued_channel,
+        dispatcher=dispatcher,
+        deduplicator=deduplicator,
+        payload_formatter=payload_formatter,
+        summary_collector=summary_collector,
+        summary_dispatcher=summary_dispatcher,
+        summary_service=summary_service,
+        subscriber=subscriber,
+        subscribed_event_types=(
+            subscribed_event_types
+        ),
+    )
+
+
+
+
+def build_notification_end_of_day(
+    *,
+    notification:
+        PhoenixNotificationContainer,
+    end_of_day_coordinator:
+        TradingDayEndOfDayCoordinator,
+) -> TradingDayEndOfDayNotificationCoordinator:
+    """
+    Attach M11 summary/failure notifications to the exact
+    supplied M10 end-of-day coordinator.
+
+    The supplied M10 coordinator remains authoritative and is
+    not replaced or reconstructed.
+    """
+
+    return TradingDayEndOfDayNotificationCoordinator(
+        runtime_id=(
+            notification
+            .runtime_startup
+            .orchestrator
+            .runtime_id
+        ),
+        end_of_day=end_of_day_coordinator,
+        summary_service=(
+            notification.summary_service
+        ),
+        alert_dispatcher=(
+            notification.dispatcher
+        ),
+    )
+
+
+
 __all__ = [
     "PhoenixDhanContainer",
     "PhoenixExitRuntimeContainer",
@@ -1693,4 +1975,7 @@ __all__ = [
     "build_dhan_recovery_provider",
     "build_recovery_state_restorer_binding",
     "build_recovery_foundation",
+    "PhoenixNotificationContainer",
+    "build_notification_foundation",
+    "build_notification_end_of_day",
 ]
