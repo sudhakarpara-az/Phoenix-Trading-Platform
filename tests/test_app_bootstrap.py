@@ -299,4 +299,6 @@ def test_bootstrap_public_exports() -> None:
         "compose_recovery_foundation",
         "compose_notification_foundation",
         "compose_notification_end_of_day",
+        "compose_reporting_foundation",
+        "compose_reporting_end_of_day",
     ]
