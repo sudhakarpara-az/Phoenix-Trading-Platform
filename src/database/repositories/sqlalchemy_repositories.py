@@ -478,6 +478,98 @@ class SQLAlchemyOrderRepository(
             )
         )
 
+    def list_open_orders_for_position(
+        self,
+        position_id: str,
+    ) -> tuple[
+        OrderRecord,
+        ...,
+    ]:
+        """
+        Return unresolved orders for one durable position
+        across runtime boundaries.
+
+        This is intentionally NOT scoped to runtime_id.
+
+        A SELL submitted by an interrupted source runtime
+        remains authoritative after Phoenix starts a new
+        process/runtime and must still block duplicate exits.
+        """
+
+        if not isinstance(
+            position_id,
+            str,
+        ):
+            raise TypeError(
+                "position_id must be a string"
+            )
+
+        normalized = position_id.strip()
+
+        if not normalized:
+            raise ValueError(
+                "position_id cannot be empty"
+            )
+
+        return self._all(
+            select(
+                OrderRecord
+            )
+            .where(
+                OrderRecord.position_id
+                == normalized
+            )
+            .where(
+                OrderRecord.status.not_in(
+                    self._TERMINAL_STATUSES
+                )
+            )
+            .order_by(
+                OrderRecord.updated_at
+            )
+        )
+
+
+    def list_by_trading_date(
+        self,
+        trading_date: date,
+    ) -> tuple[
+        OrderRecord,
+        ...,
+    ]:
+        """
+        Return every durable order intent consumed on one
+        trading date across all Phoenix runtime processes.
+
+        Terminal orders are intentionally included because
+        they have already consumed ORD-/EXIT- sequence IDs.
+        """
+
+        if type(trading_date) is not date:
+            raise TypeError(
+                "trading_date must be a date"
+            )
+
+        return self._all(
+            select(
+                OrderRecord
+            )
+            .join(
+                RuntimeSessionRecord,
+                (
+                    RuntimeSessionRecord.runtime_id
+                    == OrderRecord.runtime_id
+                ),
+            )
+            .where(
+                RuntimeSessionRecord.trading_date
+                == trading_date
+            )
+            .order_by(
+                OrderRecord.created_at
+            )
+        )
+
     def get_by_broker_order_id(
         self,
         broker_order_id: str,
@@ -559,6 +651,37 @@ class SQLAlchemyPositionRepository(
             )
             .order_by(
                 PositionRecord.opened_at
+            )
+        )
+
+    def get_by_entry_order_intent_id(
+        self,
+        entry_order_intent_id: str,
+    ) -> PositionRecord | None:
+        """
+        Resolve the durable M07 position created from one BUY.
+
+        Used by startup recovery to prove a broker FILLED BUY
+        already crossed the PositionRecord durability boundary.
+        """
+
+        normalized = (
+            entry_order_intent_id.strip()
+        )
+
+        if not normalized:
+            raise ValueError(
+                "entry_order_intent_id cannot be empty"
+            )
+
+        return self._first(
+            select(
+                PositionRecord
+            )
+            .where(
+                PositionRecord
+                .entry_order_intent_id
+                == normalized
             )
         )
 
@@ -1313,4 +1436,4 @@ class SQLAlchemyAccountEligibilitySnapshotRepository:
                 record
             )
 
-            return record    
+            return record

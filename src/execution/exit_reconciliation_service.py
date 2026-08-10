@@ -158,6 +158,44 @@ class ExitReconciliationService:
         The replacement order itself is NOT submitted here.
         """
 
+        # --------------------------------------------------
+        # Reconciliation quantity scope
+        #
+        # FilledPosition.quantity is the historical/original
+        # entry quantity.
+        #
+        # The active SELL may represent only the currently
+        # open remainder after earlier partial exits.
+        # --------------------------------------------------
+
+        exit_quantity = (
+            active_exit_intent.quantity
+        )
+
+        if (
+            exit_quantity
+            > position.quantity
+        ):
+            return ExitReconciliationResult(
+                decision=(
+                    ExitReconciliationDecision
+                    .INVALID_EXIT_REFERENCE
+                ),
+                original_quantity=(
+                    exit_quantity
+                ),
+                filled_quantity=0,
+                remaining_quantity=(
+                    exit_quantity
+                ),
+                force_exit_plan=None,
+                final_snapshot=None,
+                message=(
+                    "active exit quantity exceeds "
+                    "supplied position quantity"
+                ),
+            )
+
         if (
             active_exit_intent.position_id
             != position.position_id
@@ -168,11 +206,11 @@ class ExitReconciliationService:
                     .INVALID_EXIT_REFERENCE
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=0,
                 remaining_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 force_exit_plan=None,
                 final_snapshot=None,
@@ -203,17 +241,64 @@ class ExitReconciliationService:
                     .STATUS_UNKNOWN
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=0,
                 remaining_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 force_exit_plan=None,
                 final_snapshot=None,
                 message=(
                     "failed to fetch active exit status: "
                     f"{exc}"
+                ),
+            )
+
+        # --------------------------------------------------
+        # Broker snapshot identity / quantity validation
+        # --------------------------------------------------
+
+        if (
+            snapshot.quantity
+            != exit_quantity
+            or snapshot.filled_quantity
+            > exit_quantity
+            or (
+                snapshot.status
+                is BrokerOrderStatus.FILLED
+                and snapshot.filled_quantity
+                != exit_quantity
+            )
+        ):
+            filled_quantity = min(
+                snapshot.filled_quantity,
+                exit_quantity,
+            )
+
+            return ExitReconciliationResult(
+                decision=(
+                    ExitReconciliationDecision
+                    .INVALID_EXIT_REFERENCE
+                ),
+                original_quantity=(
+                    exit_quantity
+                ),
+                filled_quantity=(
+                    filled_quantity
+                ),
+                remaining_quantity=(
+                    max(
+                        exit_quantity
+                        - filled_quantity,
+                        0,
+                    )
+                ),
+                force_exit_plan=None,
+                final_snapshot=snapshot,
+                message=(
+                    "broker exit snapshot quantity "
+                    "does not match active exit intent"
                 ),
             )
 
@@ -236,10 +321,10 @@ class ExitReconciliationService:
                     .POSITION_ALREADY_CLOSED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 remaining_quantity=0,
                 force_exit_plan=None,
@@ -279,17 +364,17 @@ class ExitReconciliationService:
                     .STATUS_UNKNOWN
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
                     min(
                         snapshot.filled_quantity,
-                        position.quantity,
+                        exit_quantity,
                     )
                 ),
                 remaining_quantity=(
                     max(
-                        position.quantity
+                        exit_quantity
                         - snapshot.filled_quantity,
                         0,
                     )
@@ -319,14 +404,14 @@ class ExitReconciliationService:
                     .CANCELLATION_FAILED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
                     snapshot.filled_quantity
                 ),
                 remaining_quantity=(
                     max(
-                        position.quantity
+                        exit_quantity
                         - snapshot.filled_quantity,
                         0,
                     )
@@ -350,14 +435,14 @@ class ExitReconciliationService:
                     .CANCELLATION_FAILED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
                     snapshot.filled_quantity
                 ),
                 remaining_quantity=(
                     max(
-                        position.quantity
+                        exit_quantity
                         - snapshot.filled_quantity,
                         0,
                     )
@@ -394,14 +479,14 @@ class ExitReconciliationService:
                     .CANCELLATION_NOT_CONFIRMED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
                     snapshot.filled_quantity
                 ),
                 remaining_quantity=(
                     max(
-                        position.quantity
+                        exit_quantity
                         - snapshot.filled_quantity,
                         0,
                     )
@@ -412,6 +497,51 @@ class ExitReconciliationService:
                     "unable to confirm final exit state "
                     "after cancellation: "
                     f"{exc}"
+                ),
+            )
+
+        if (
+            final_snapshot.quantity
+            != exit_quantity
+            or final_snapshot.filled_quantity
+            > exit_quantity
+            or (
+                final_snapshot.status
+                is BrokerOrderStatus.FILLED
+                and final_snapshot.filled_quantity
+                != exit_quantity
+            )
+        ):
+            filled_quantity = min(
+                final_snapshot.filled_quantity,
+                exit_quantity,
+            )
+
+            return ExitReconciliationResult(
+                decision=(
+                    ExitReconciliationDecision
+                    .INVALID_EXIT_REFERENCE
+                ),
+                original_quantity=(
+                    exit_quantity
+                ),
+                filled_quantity=(
+                    filled_quantity
+                ),
+                remaining_quantity=(
+                    max(
+                        exit_quantity
+                        - filled_quantity,
+                        0,
+                    )
+                ),
+                force_exit_plan=None,
+                final_snapshot=(
+                    final_snapshot
+                ),
+                message=(
+                    "final broker exit snapshot quantity "
+                    "does not match active exit intent"
                 ),
             )
 
@@ -430,10 +560,10 @@ class ExitReconciliationService:
                     .POSITION_ALREADY_CLOSED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 remaining_quantity=0,
                 force_exit_plan=None,
@@ -453,17 +583,17 @@ class ExitReconciliationService:
                     .CANCELLATION_NOT_CONFIRMED
                 ),
                 original_quantity=(
-                    position.quantity
+                    exit_quantity
                 ),
                 filled_quantity=(
                     min(
                         final_snapshot.filled_quantity,
-                        position.quantity,
+                        exit_quantity,
                     )
                 ),
                 remaining_quantity=(
                     max(
-                        position.quantity
+                        exit_quantity
                         - final_snapshot.filled_quantity,
                         0,
                     )
@@ -492,11 +622,11 @@ class ExitReconciliationService:
     ) -> ExitReconciliationResult:
         filled_quantity = min(
             snapshot.filled_quantity,
-            position.quantity,
+            snapshot.quantity,
         )
 
         remaining_quantity = max(
-            position.quantity
+            snapshot.quantity
             - filled_quantity,
             0,
         )
@@ -513,7 +643,7 @@ class ExitReconciliationService:
                     .POSITION_ALREADY_CLOSED
                 ),
                 original_quantity=(
-                    position.quantity
+                    snapshot.quantity
                 ),
                 filled_quantity=(
                     filled_quantity
@@ -545,7 +675,7 @@ class ExitReconciliationService:
                 .FORCE_EXIT_READY
             ),
             original_quantity=(
-                position.quantity
+                snapshot.quantity
             ),
             filled_quantity=(
                 filled_quantity

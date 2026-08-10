@@ -913,6 +913,36 @@ class ExecutionService:
 
         return mapping[status]
 
+    def restore_sequence_floor(
+        self,
+        floor: int,
+    ) -> int:
+        """
+        Restore the minimum already-consumed BUY intent
+        sequence for the trading day.
+
+        Recovery is monotonic and idempotent. It may advance
+        the sequence but can never move it backwards.
+        """
+
+        if type(floor) is not int:
+            raise TypeError(
+                "sequence floor must be an integer"
+            )
+
+        if floor < 0:
+            raise ValueError(
+                "sequence floor cannot be negative"
+            )
+
+        with self._sequence_lock:
+            self._sequence = max(
+                self._sequence,
+                floor,
+            )
+
+            return self._sequence
+
     def _next_intent_id(
         self,
         requested_at: datetime,

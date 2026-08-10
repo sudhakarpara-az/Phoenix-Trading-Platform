@@ -43,6 +43,9 @@ from src.account.account_execution_gate import (
 from src.database.entry_durability import (
     DurableEntryBrokerExecutionProvider,
 )
+from src.database.repositories.sqlalchemy_repositories import (
+    SQLAlchemyOrderRepository,
+)
 from src.execution.broker_execution_provider import (
     BrokerOrderSnapshot,
 )
@@ -2993,6 +2996,10 @@ class TradingDayCloseReadinessProvider:
             TradingDayEntryRuntimeCoordinator,
         account_adapter:
             DhanAccountAdapter,
+        durable_order_repository:
+            SQLAlchemyOrderRepository
+            | None = None,
+        runtime_id: str | None = None,
     ) -> None:
         if not isinstance(
             entry_runtime,
@@ -3020,6 +3027,37 @@ class TradingDayCloseReadinessProvider:
             account_adapter
         )
 
+        if (
+            durable_order_repository
+            is None
+        ) != (
+            runtime_id is None
+        ):
+            raise ValueError(
+                "durable_order_repository and runtime_id "
+                "must be supplied together"
+            )
+
+        normalized_runtime_id = None
+
+        if runtime_id is not None:
+            normalized_runtime_id = (
+                runtime_id.strip()
+            )
+
+            if not normalized_runtime_id:
+                raise ValueError(
+                    "runtime_id cannot be empty"
+                )
+
+        self._durable_order_repository = (
+            durable_order_repository
+        )
+
+        self._runtime_id = (
+            normalized_runtime_id
+        )
+
     @property
     def entry_runtime(
         self,
@@ -3031,6 +3069,18 @@ class TradingDayCloseReadinessProvider:
         self,
     ) -> DhanAccountAdapter:
         return self._account_adapter
+
+    @property
+    def durable_order_repository(
+        self,
+    ) -> SQLAlchemyOrderRepository | None:
+        return self._durable_order_repository
+
+    @property
+    def runtime_id(
+        self,
+    ) -> str | None:
+        return self._runtime_id
 
     def evaluate_close_readiness(
         self,
@@ -3048,9 +3098,29 @@ class TradingDayCloseReadinessProvider:
             .open_positions()
         )
 
-        local_unresolved_orders = (
+        entry_unresolved_orders = (
             self._entry_runtime
             .pending_count
+        )
+
+        durable_unresolved_orders = 0
+
+        if (
+            self._durable_order_repository
+            is not None
+        ):
+            assert self._runtime_id is not None
+
+            durable_unresolved_orders = len(
+                self._durable_order_repository
+                .list_open_orders(
+                    self._runtime_id
+                )
+            )
+
+        local_unresolved_orders = max(
+            entry_unresolved_orders,
+            durable_unresolved_orders,
         )
 
         self._validate_count(
@@ -3144,4 +3214,1471 @@ class TradingDayCloseReadinessProvider:
 
 __all__ += [
     "TradingDayCloseReadinessProvider",
+]
+
+
+# ============================================================
+# M10 15:15 force-exit execution runtime
+# ============================================================
+
+from src.database.exit_durability import (
+    DurableExitExecutionProvider,
+    SQLAlchemyExitPersistenceService,
+)
+from src.database.schema import (
+    OrderRecord,
+)
+from src.execution.execution_types import (
+    BrokerOrderReference,
+)
+from src.execution.exit_execution_provider import (
+    ExitOrderIntent,
+    ExitOrderIntentId,
+    ExitTransactionType,
+)
+from src.execution.exit_execution_service import (
+    ExitExecutionServiceResult,
+)
+from src.execution.exit_reconciliation_service import (
+    ExitReconciliationDecision,
+    ExitReconciliationService,
+)
+from src.execution.idempotency_guard import (
+    DuplicateOrderGuard,
+    IdempotencyKey,
+    IdempotencyState,
+)
+from src.execution.position_exit_types import (
+    ExitOrderType,
+    ExitReason,
+)
+from src.risk.force_exit_coordinator import (
+    ForceExitAction,
+    ForceExitInstruction,
+)
+from src.risk.m06_exit_integration_service import (
+    M07ExitIntegrationStatus,
+    M07ToM06ExitIntegrationService,
+)
+from src.risk.position_exit_decision_engine import (
+    PositionExitDecision,
+    PositionExitDecisionStatus,
+)
+from src.risk.position_lifecycle_manager import (
+    PositionLifecycleManager,
+)
+from src.risk.position_registry import (
+    PositionRegistry,
+)
+from src.risk.risk_types import (
+    ManagedPositionState,
+    RiskTriggerType,
+)
+from src.services.scheduler import (
+    TradingDayForceExitCoordinator,
+    TradingDayForceExitResult,
+)
+
+
+class TradingDayForceExitRuntimeStatus(
+    str,
+    Enum,
+):
+    """
+    Result of executing one M10 force-exit instruction.
+    """
+
+    NOT_DUE = "NOT_DUE"
+
+    NO_ACTION = "NO_ACTION"
+
+    DRY_RUN_PENDING = "DRY_RUN_PENDING"
+
+    LIVE_EXIT_ACTIVE = "LIVE_EXIT_ACTIVE"
+
+    REPLACEMENT_ACTIVE = "REPLACEMENT_ACTIVE"
+
+    POSITION_CLOSED = "POSITION_CLOSED"
+
+    RETRY_REQUIRED = "RETRY_REQUIRED"
+
+    RECONCILIATION_REQUIRED = (
+        "RECONCILIATION_REQUIRED"
+    )
+
+    FAILED_CLOSED = "FAILED_CLOSED"
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayForceExitInstructionResult:
+    """
+    Application result for one M07 ForceExitInstruction.
+    """
+
+    instruction: ForceExitInstruction
+
+    status: TradingDayForceExitRuntimeStatus
+
+    position: ManagedPosition
+
+    exit_intent_id: str | None = None
+
+    broker_order_id: str | None = None
+
+    message: str | None = None
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayForceExitRuntimeResult:
+    """
+    Result of one complete M10 15:15 execution cycle.
+    """
+
+    coordination: TradingDayForceExitResult
+
+    instruction_results: tuple[
+        TradingDayForceExitInstructionResult,
+        ...
+    ]
+
+    evaluated_at: datetime
+
+
+class TradingDayForceExitRuntimeCoordinator:
+    """
+    Executes M10's 15:15 M07 force-exit instructions.
+
+    Safety ordering:
+
+        TradingDayForceExitCoordinator
+            ->
+        M10 EXIT_ONLY
+            ->
+        ForceExitInstruction
+            ->
+        M07/M06 execution or reconciliation
+            ->
+        durable broker fill ledger
+            ->
+        M07 PositionLifecycleManager
+            ->
+        durable PositionRecord
+            ->
+        terminal SELL OrderRecord
+            ->
+        replacement SELL only when previous SELL is proven dead
+
+    This coordinator does not implement broker payload logic.
+    """
+
+    _ACTIVE_BROKER_STATUSES = frozenset(
+        {
+            BrokerOrderStatus.PENDING,
+            BrokerOrderStatus.OPEN,
+            BrokerOrderStatus.PARTIALLY_FILLED,
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        trading_day_force_exit:
+            TradingDayForceExitCoordinator,
+        exit_integration:
+            M07ToM06ExitIntegrationService,
+        exit_reconciliation:
+            ExitReconciliationService,
+        exit_persistence:
+            SQLAlchemyExitPersistenceService,
+        durable_exit_provider:
+            DurableExitExecutionProvider,
+        position_lifecycle_manager:
+            PositionLifecycleManager,
+        position_registry:
+            PositionRegistry,
+        order_repository:
+            SQLAlchemyOrderRepository,
+        duplicate_guard:
+            DuplicateOrderGuard,
+        runtime_id: str,
+        execution_mode: ExecutionMode,
+    ) -> None:
+        normalized_runtime_id = (
+            runtime_id.strip()
+        )
+
+        if not normalized_runtime_id:
+            raise ValueError(
+                "runtime_id cannot be empty"
+            )
+
+        if not isinstance(
+            execution_mode,
+            ExecutionMode,
+        ):
+            raise TypeError(
+                "execution_mode must be ExecutionMode"
+            )
+
+        self._trading_day_force_exit = (
+            trading_day_force_exit
+        )
+
+        self._exit_integration = (
+            exit_integration
+        )
+
+        self._exit_reconciliation = (
+            exit_reconciliation
+        )
+
+        self._exit_persistence = (
+            exit_persistence
+        )
+
+        self._durable_exit_provider = (
+            durable_exit_provider
+        )
+
+        self._position_lifecycle_manager = (
+            position_lifecycle_manager
+        )
+
+        self._position_registry = (
+            position_registry
+        )
+
+        self._order_repository = (
+            order_repository
+        )
+
+        self._duplicate_guard = (
+            duplicate_guard
+        )
+
+        self._runtime_id = (
+            normalized_runtime_id
+        )
+
+        self._execution_mode = (
+            execution_mode
+        )
+
+    # ========================================================
+    # Exact composition ownership
+    # ========================================================
+
+    @property
+    def trading_day_force_exit(
+        self,
+    ) -> TradingDayForceExitCoordinator:
+        return self._trading_day_force_exit
+
+    @property
+    def exit_integration(
+        self,
+    ) -> M07ToM06ExitIntegrationService:
+        return self._exit_integration
+
+    @property
+    def exit_reconciliation(
+        self,
+    ) -> ExitReconciliationService:
+        return self._exit_reconciliation
+
+    @property
+    def exit_persistence(
+        self,
+    ) -> SQLAlchemyExitPersistenceService:
+        return self._exit_persistence
+
+    @property
+    def durable_exit_provider(
+        self,
+    ) -> DurableExitExecutionProvider:
+        return self._durable_exit_provider
+
+    @property
+    def position_lifecycle_manager(
+        self,
+    ) -> PositionLifecycleManager:
+        return self._position_lifecycle_manager
+
+    @property
+    def position_registry(
+        self,
+    ) -> PositionRegistry:
+        return self._position_registry
+
+    @property
+    def order_repository(
+        self,
+    ) -> SQLAlchemyOrderRepository:
+        return self._order_repository
+
+    @property
+    def duplicate_guard(
+        self,
+    ) -> DuplicateOrderGuard:
+        return self._duplicate_guard
+
+    @property
+    def runtime_id(
+        self,
+    ) -> str:
+        return self._runtime_id
+
+    @property
+    def execution_mode(
+        self,
+    ) -> ExecutionMode:
+        return self._execution_mode
+
+    # ========================================================
+    # Public 15:15 cycle
+    # ========================================================
+
+    def evaluate(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> TradingDayForceExitRuntimeResult:
+        """
+        Coordinate M10 first, then execute every resulting M07
+        instruction.
+
+        One position failure does not prevent evaluation of the
+        remaining positions.
+
+        Any uncertain open position is moved to
+        RECONCILIATION_REQUIRED and persisted fail-closed.
+        """
+
+        coordination = (
+            self._trading_day_force_exit
+            .coordinate(
+                evaluated_at=evaluated_at
+            )
+        )
+
+        if not coordination.force_exit_due:
+            return TradingDayForceExitRuntimeResult(
+                coordination=coordination,
+                instruction_results=(),
+                evaluated_at=evaluated_at,
+            )
+
+        batch = coordination.batch
+
+        if batch is None:
+            raise RuntimeError(
+                "force-exit due result requires batch"
+            )
+
+        results: list[
+            TradingDayForceExitInstructionResult
+        ] = []
+
+        for instruction in batch.instructions:
+            try:
+                result = (
+                    self._process_instruction(
+                        instruction=instruction,
+                        evaluated_at=evaluated_at,
+                    )
+                )
+
+            except Exception as exc:
+                result = self._fail_closed(
+                    instruction=instruction,
+                    changed_at=evaluated_at,
+                    message=(
+                        "force-exit runtime failure: "
+                        f"{exc}"
+                    ),
+                )
+
+            results.append(
+                result
+            )
+
+        return TradingDayForceExitRuntimeResult(
+            coordination=coordination,
+            instruction_results=tuple(
+                results
+            ),
+            evaluated_at=evaluated_at,
+        )
+
+    # ========================================================
+    # Instruction routing
+    # ========================================================
+
+    def _process_instruction(
+        self,
+        *,
+        instruction: ForceExitInstruction,
+        evaluated_at: datetime,
+    ) -> TradingDayForceExitInstructionResult:
+        position = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        if (
+            instruction.action
+            is ForceExitAction.NONE
+        ):
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .NO_ACTION
+                    ),
+                    position=position,
+                )
+            )
+
+        if (
+            instruction.action
+            is ForceExitAction.NEW_FORCE_EXIT
+        ):
+            return self._submit_force_exit(
+                instruction=instruction,
+                quantity=instruction.quantity,
+                evaluated_at=evaluated_at,
+                replacement=False,
+            )
+
+        if (
+            instruction.action
+            is ForceExitAction
+            .RECONCILE_EXISTING_EXIT
+        ):
+            return self._reconcile_existing_exit(
+                instruction=instruction,
+                evaluated_at=evaluated_at,
+            )
+
+        raise RuntimeError(
+            "unsupported force-exit instruction"
+        )
+
+    # ========================================================
+    # NEW_FORCE_EXIT
+    # ========================================================
+
+    def _submit_force_exit(
+        self,
+        *,
+        instruction: ForceExitInstruction,
+        quantity: int,
+        evaluated_at: datetime,
+        replacement: bool,
+    ) -> TradingDayForceExitInstructionResult:
+        position = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        if quantity <= 0:
+            raise ValueError(
+                "force-exit quantity must be positive"
+            )
+
+        if quantity != position.open_quantity:
+            raise ValueError(
+                "force-exit quantity must equal "
+                "current open quantity"
+            )
+
+        decision = PositionExitDecision(
+            status=(
+                PositionExitDecisionStatus
+                .EXIT_REQUIRED
+            ),
+            position_id=(
+                instruction.position_id
+            ),
+            trigger=RiskTriggerType.FORCE_EXIT,
+            quantity=quantity,
+            decided_at=evaluated_at,
+            message=(
+                "M10 mandatory 15:15 force exit"
+            ),
+        )
+
+        integration = (
+            self._exit_integration
+            .execute_decision(
+                decision=decision,
+                execution_mode=(
+                    self._execution_mode
+                ),
+                requested_at=evaluated_at,
+            )
+        )
+
+        # M07 moves to EXIT_PENDING before M06 submission.
+        # Make that lifecycle state durable immediately.
+        self._exit_persistence\
+            .persist_managed_position_state(
+                managed_position=(
+                    integration.position
+                )
+            )
+
+        # ----------------------------------------------------
+        # DRY_RUN deliberately has no durable broker SELL.
+        # ----------------------------------------------------
+
+        if (
+            self._execution_mode
+            is ExecutionMode.DRY_RUN
+        ):
+            service_result = (
+                integration.execution_result
+            )
+
+            intent_id = None
+
+            if isinstance(
+                service_result,
+                ExitExecutionServiceResult,
+            ):
+                if service_result.intent is not None:
+                    intent_id = (
+                        service_result
+                        .intent
+                        .intent_id
+                        .value
+                    )
+
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .DRY_RUN_PENDING
+                    ),
+                    position=integration.position,
+                    exit_intent_id=intent_id,
+                    message=(
+                        integration.message
+                    ),
+                )
+            )
+
+        # ----------------------------------------------------
+        # Conservative M07/M06 failure
+        # ----------------------------------------------------
+
+        if (
+            integration.status
+            is M07ExitIntegrationStatus
+            .RECONCILIATION_REQUIRED
+        ):
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .RECONCILIATION_REQUIRED
+                    ),
+                    position=integration.position,
+                    message=integration.message,
+                )
+            )
+
+        if (
+            integration.status
+            is not M07ExitIntegrationStatus.SUBMITTED
+        ):
+            raise RuntimeError(
+                "force-exit integration did not "
+                "submit SELL"
+            )
+
+        service_result = (
+            integration.execution_result
+        )
+
+        if not isinstance(
+            service_result,
+            ExitExecutionServiceResult,
+        ):
+            raise RuntimeError(
+                "M07 exit integration returned "
+                "unexpected M06 result"
+            )
+
+        intent = service_result.intent
+
+        broker_result = (
+            service_result.execution_result
+        )
+
+        if (
+            not service_result.accepted
+            or intent is None
+            or broker_result is None
+        ):
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    service_result.message
+                    or "LIVE SELL was not proven accepted"
+                ),
+            )
+
+        reference = (
+            broker_result.broker_reference
+        )
+
+        if reference is None:
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    "LIVE SELL accepted without "
+                    "broker reference"
+                ),
+                exit_intent_id=(
+                    intent.intent_id.value
+                ),
+            )
+
+        # ----------------------------------------------------
+        # Immediate authoritative broker refresh.
+        # ----------------------------------------------------
+
+        try:
+            snapshot = (
+                self._durable_exit_provider
+                .get_exit_status(
+                    reference
+                )
+            )
+
+        except Exception as exc:
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    "LIVE SELL status refresh failed: "
+                    f"{exc}"
+                ),
+                exit_intent_id=(
+                    intent.intent_id.value
+                ),
+                broker_order_id=(
+                    reference.order_id
+                ),
+            )
+
+        managed = self._checkpoint_snapshot(
+            intent=intent,
+            snapshot=snapshot,
+            maintain_active_exit=True,
+        )
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.FILLED
+        ):
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .POSITION_CLOSED
+                    ),
+                    position=managed,
+                    exit_intent_id=(
+                        intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        reference.order_id
+                    ),
+                )
+            )
+
+        if (
+            snapshot.status
+            in self._ACTIVE_BROKER_STATUSES
+        ):
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .REPLACEMENT_ACTIVE
+                        if replacement
+                        else
+                        TradingDayForceExitRuntimeStatus
+                        .LIVE_EXIT_ACTIVE
+                    ),
+                    position=managed,
+                    exit_intent_id=(
+                        intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        reference.order_id
+                    ),
+                )
+            )
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.CANCELLED
+        ):
+            cancelled_changed_at = max(
+                evaluated_at,
+                snapshot.updated_at,
+            )
+
+            self._release_cancelled_guard(
+                position_id=(
+                    instruction.position_id.value
+                ),
+                changed_at=(
+                    cancelled_changed_at
+                ),
+            )
+
+            restored = self._restore_after_cancel(
+                position_id=(
+                    instruction.position_id
+                ),
+                changed_at=(
+                    cancelled_changed_at
+                ),
+            )
+
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .RETRY_REQUIRED
+                    ),
+                    position=restored,
+                    exit_intent_id=(
+                        intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        reference.order_id
+                    ),
+                    message=(
+                        "force-exit SELL is cancelled; "
+                        "next 15:15 cycle may retry"
+                    ),
+                )
+            )
+
+        return self._mark_reconciliation_required(
+            instruction=instruction,
+            changed_at=evaluated_at,
+            message=(
+                "force-exit SELL requires broker "
+                f"reconciliation: {snapshot.status.value}"
+            ),
+            exit_intent_id=(
+                intent.intent_id.value
+            ),
+            broker_order_id=(
+                reference.order_id
+            ),
+        )
+
+    # ========================================================
+    # RECONCILE_EXISTING_EXIT
+    # ========================================================
+
+    def _reconcile_existing_exit(
+        self,
+        *,
+        instruction: ForceExitInstruction,
+        evaluated_at: datetime,
+    ) -> TradingDayForceExitInstructionResult:
+        position = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        # DRY_RUN creates no durable broker SELL context.
+        if (
+            self._execution_mode
+            is ExecutionMode.DRY_RUN
+        ):
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .DRY_RUN_PENDING
+                    ),
+                    position=position,
+                    message=(
+                        "DRY_RUN exit remains simulated; "
+                        "no broker reconciliation performed"
+                    ),
+                )
+            )
+
+        durable_sell = (
+            self._find_active_durable_sell(
+                position_id=(
+                    instruction.position_id.value
+                )
+            )
+        )
+
+        if durable_sell is None:
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    "no unique durable unresolved SELL "
+                    "exists for position"
+                ),
+            )
+
+        if (
+            durable_sell.broker_name is None
+            or durable_sell.broker_order_id is None
+        ):
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    "durable SELL has no broker reference"
+                ),
+                exit_intent_id=(
+                    durable_sell.order_intent_id
+                ),
+            )
+
+        try:
+            active_intent = (
+                self._reconstruct_exit_intent(
+                    durable_sell=durable_sell,
+                    position=position,
+                )
+            )
+
+            broker_reference = (
+                BrokerOrderReference(
+                    broker_name=(
+                        durable_sell.broker_name
+                    ),
+                    order_id=(
+                        durable_sell.broker_order_id
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            return self._mark_reconciliation_required(
+                instruction=instruction,
+                changed_at=evaluated_at,
+                message=(
+                    "durable SELL reconstruction failed: "
+                    f"{exc}"
+                ),
+                exit_intent_id=(
+                    durable_sell.order_intent_id
+                ),
+                broker_order_id=(
+                    durable_sell.broker_order_id
+                ),
+            )
+
+        reconciliation = (
+            self._exit_reconciliation
+            .reconcile_for_force_exit(
+                position=position.position,
+                active_exit_intent=(
+                    active_intent
+                ),
+                broker_reference=(
+                    broker_reference
+                ),
+                requested_at=evaluated_at,
+            )
+        )
+
+        managed = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        final_snapshot = (
+            reconciliation.final_snapshot
+        )
+
+        reconciliation_changed_at = (
+            evaluated_at
+            if final_snapshot is None
+            else max(
+                evaluated_at,
+                final_snapshot.updated_at,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Every authoritative final broker snapshot crosses the
+        # durable fill -> M07 -> PositionRecord boundary before
+        # any replacement order is submitted.
+        # ----------------------------------------------------
+
+        if final_snapshot is not None:
+            managed = self._checkpoint_snapshot(
+                intent=active_intent,
+                snapshot=final_snapshot,
+                maintain_active_exit=False,
+            )
+
+        if (
+            reconciliation.decision
+            is ExitReconciliationDecision
+            .POSITION_ALREADY_CLOSED
+        ):
+            if (
+                managed.open_quantity != 0
+                or managed.state
+                is not ManagedPositionState.CLOSED
+            ):
+                return self._mark_reconciliation_required(
+                    instruction=instruction,
+                    changed_at=(
+                        reconciliation_changed_at
+                    ),
+                    message=(
+                        "broker reports completed SELL but "
+                        "M07 position is not CLOSED"
+                    ),
+                    exit_intent_id=(
+                        active_intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        broker_reference.order_id
+                    ),
+                )
+
+            return (
+                TradingDayForceExitInstructionResult(
+                    instruction=instruction,
+                    status=(
+                        TradingDayForceExitRuntimeStatus
+                        .POSITION_CLOSED
+                    ),
+                    position=managed,
+                    exit_intent_id=(
+                        active_intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        broker_reference.order_id
+                    ),
+                )
+            )
+
+        if (
+            reconciliation.decision
+            is ExitReconciliationDecision
+            .FORCE_EXIT_READY
+        ):
+            plan = reconciliation.force_exit_plan
+
+            if plan is None:
+                raise RuntimeError(
+                    "FORCE_EXIT_READY requires plan"
+                )
+
+            if final_snapshot is None:
+                raise RuntimeError(
+                    "FORCE_EXIT_READY requires final "
+                    "broker snapshot"
+                )
+
+            if (
+                final_snapshot.status
+                is not BrokerOrderStatus.CANCELLED
+            ):
+                raise RuntimeError(
+                    "force-exit replacement requires "
+                    "confirmed CANCELLED old SELL"
+                )
+
+            if managed.open_quantity <= 0:
+                return (
+                    TradingDayForceExitInstructionResult(
+                        instruction=instruction,
+                        status=(
+                            TradingDayForceExitRuntimeStatus
+                            .POSITION_CLOSED
+                        ),
+                        position=managed,
+                        exit_intent_id=(
+                            active_intent.intent_id.value
+                        ),
+                        broker_order_id=(
+                            broker_reference.order_id
+                        ),
+                    )
+                )
+
+            restored = self._restore_after_cancel(
+                position_id=(
+                    instruction.position_id
+                ),
+                changed_at=(
+                    reconciliation_changed_at
+                ),
+            )
+
+            if (
+                reconciliation.remaining_quantity
+                != restored.open_quantity
+                or plan.quantity
+                != restored.open_quantity
+            ):
+                return self._mark_reconciliation_required(
+                    instruction=instruction,
+                    changed_at=(
+                        reconciliation_changed_at
+                    ),
+                    message=(
+                        "reconciliation replacement quantity "
+                        "does not equal durable open quantity"
+                    ),
+                    exit_intent_id=(
+                        active_intent.intent_id.value
+                    ),
+                    broker_order_id=(
+                        broker_reference.order_id
+                    ),
+                )
+
+            # Old SELL is now terminal and PositionRecord is
+            # durable. Only now may M07/M06 submit replacement.
+            return self._submit_force_exit(
+                instruction=instruction,
+                quantity=(
+                    restored.open_quantity
+                ),
+                evaluated_at=(
+                    reconciliation_changed_at
+                ),
+                replacement=True,
+            )
+
+        # ----------------------------------------------------
+        # Cancellation/status uncertainty.
+        #
+        # Keep EXIT_ONLY and persist conservative M07 state.
+        # ----------------------------------------------------
+
+        return self._mark_reconciliation_required(
+            instruction=instruction,
+            changed_at=(
+                reconciliation_changed_at
+            ),
+            message=(
+                reconciliation.message
+                or (
+                    "existing SELL reconciliation "
+                    f"requires attention: "
+                    f"{reconciliation.decision.value}"
+                )
+            ),
+            exit_intent_id=(
+                active_intent.intent_id.value
+            ),
+            broker_order_id=(
+                broker_reference.order_id
+            ),
+        )
+
+    # ========================================================
+    # Durable snapshot application
+    # ========================================================
+
+    def _checkpoint_snapshot(
+        self,
+        *,
+        intent: ExitOrderIntent,
+        snapshot,
+        maintain_active_exit: bool,
+    ) -> ManagedPosition:
+        delta = (
+            self._exit_persistence
+            .checkpoint_broker_snapshot(
+                intent=intent,
+                snapshot=snapshot,
+            )
+        )
+
+        managed = (
+            self._position_registry.require(
+                intent.position_id
+            )
+        )
+
+        if delta.has_fill:
+            if delta.price is None:
+                raise RuntimeError(
+                    "positive durable SELL fill "
+                    "requires price"
+                )
+
+            managed = (
+                self._position_lifecycle_manager
+                .apply_exit_fill(
+                    position_id=(
+                        intent.position_id
+                    ),
+                    fill_quantity=(
+                        delta.quantity
+                    ),
+                    fill_price=delta.price,
+                    filled_at=delta.filled_at,
+                )
+            )
+
+        # A partially filled but still-live broker SELL remains
+        # EXIT_PENDING so repeated 15:15 cycles reconcile it
+        # instead of submitting another SELL.
+        if (
+            maintain_active_exit
+            and snapshot.status
+            in self._ACTIVE_BROKER_STATUSES
+            and managed.open_quantity > 0
+            and managed.state
+            is ManagedPositionState.PARTIALLY_EXITED
+        ):
+            managed = (
+                self._position_lifecycle_manager
+                .mark_exit_pending(
+                    position_id=(
+                        intent.position_id
+                    ),
+                    trigger=(
+                        RiskTriggerType.FORCE_EXIT
+                    ),
+                    changed_at=(
+                        snapshot.updated_at
+                    ),
+                )
+            )
+
+        if (
+            snapshot.status
+            is BrokerOrderStatus.UNKNOWN
+            and managed.open_quantity > 0
+        ):
+            managed = (
+                self._position_lifecycle_manager
+                .mark_reconciliation_required(
+                    position_id=(
+                        intent.position_id
+                    ),
+                    changed_at=(
+                        snapshot.updated_at
+                    ),
+                )
+            )
+
+        # PositionRecord is persisted before terminal SELL
+        # OrderRecord inside this method.
+        self._exit_persistence\
+            .persist_managed_position_after_snapshot(
+                intent=intent,
+                snapshot=snapshot,
+                managed_position=managed,
+            )
+
+        return managed
+
+    # ========================================================
+    # Durable SELL reconstruction
+    # ========================================================
+
+    def _find_active_durable_sell(
+        self,
+        *,
+        position_id: str,
+    ) -> OrderRecord | None:
+        matches = tuple(
+            record
+            for record
+            in self._order_repository
+            .list_open_orders_for_position(
+                position_id
+            )
+            if (
+                record.side == "SELL"
+                and record.position_id
+                == position_id
+            )
+        )
+
+        if len(matches) != 1:
+            return None
+
+        return matches[0]
+
+    @staticmethod
+    def _reconstruct_exit_intent(
+        *,
+        durable_sell: OrderRecord,
+        position: ManagedPosition,
+    ) -> ExitOrderIntent:
+        return ExitOrderIntent(
+            intent_id=ExitOrderIntentId(
+                durable_sell.order_intent_id
+            ),
+            position_id=(
+                position.position_id
+            ),
+            security_id=(
+                durable_sell.security_id
+            ),
+            symbol=(
+                durable_sell.symbol
+            ),
+            option_type=(
+                position.position.option_type
+            ),
+            transaction_type=(
+                ExitTransactionType.SELL
+            ),
+            order_type=ExitOrderType(
+                durable_sell.order_type
+            ),
+            quantity=(
+                durable_sell.quantity
+            ),
+            price=(
+                durable_sell.limit_price
+            ),
+            reason=ExitReason(
+                durable_sell.reason
+            ),
+            created_at=(
+                durable_sell.created_at
+            ),
+        )
+
+    # ========================================================
+    # Lifecycle recovery helpers
+    # ========================================================
+
+    def _restore_after_cancel(
+        self,
+        *,
+        position_id,
+        changed_at: datetime,
+    ) -> ManagedPosition:
+        position = (
+            self._position_registry.require(
+                position_id
+            )
+        )
+
+        if position.open_quantity <= 0:
+            return position
+
+        if (
+            position.state
+            in {
+                ManagedPositionState.EXIT_PENDING,
+                ManagedPositionState
+                .RECONCILIATION_REQUIRED,
+            }
+        ):
+            position = (
+                self._position_lifecycle_manager
+                .restore_after_reconciliation(
+                    position_id=position_id,
+                    changed_at=changed_at,
+                )
+            )
+
+        elif (
+            position.state
+            not in {
+                ManagedPositionState.OPEN,
+                ManagedPositionState
+                .PARTIALLY_EXITED,
+            }
+        ):
+            raise RuntimeError(
+                "cancelled SELL cannot restore "
+                f"position from {position.state.value}"
+            )
+
+        self._exit_persistence\
+            .persist_managed_position_state(
+                managed_position=position
+            )
+
+        return position
+
+    def _release_cancelled_guard(
+        self,
+        *,
+        position_id: str,
+        changed_at: datetime,
+    ) -> None:
+        key = IdempotencyKey(
+            value=(
+                "EXIT_POSITION:"
+                f"{position_id}"
+            )
+        )
+
+        record = (
+            self._duplicate_guard.get(
+                key
+            )
+        )
+
+        if (
+            record is not None
+            and record.state
+            is IdempotencyState.SUBMITTED
+        ):
+            self._duplicate_guard\
+                .release_after_reconciliation(
+                    key=key,
+                    changed_at=changed_at,
+                )
+
+    def _mark_reconciliation_required(
+        self,
+        *,
+        instruction: ForceExitInstruction,
+        changed_at: datetime,
+        message: str,
+        exit_intent_id: str | None = None,
+        broker_order_id: str | None = None,
+    ) -> TradingDayForceExitInstructionResult:
+        position = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        if (
+            position.open_quantity > 0
+            and position.state
+            is not ManagedPositionState.CLOSED
+        ):
+            position = (
+                self._position_lifecycle_manager
+                .mark_reconciliation_required(
+                    position_id=(
+                        instruction.position_id
+                    ),
+                    changed_at=changed_at,
+                )
+            )
+
+            self._exit_persistence\
+                .persist_managed_position_state(
+                    managed_position=position
+                )
+
+        return (
+            TradingDayForceExitInstructionResult(
+                instruction=instruction,
+                status=(
+                    TradingDayForceExitRuntimeStatus
+                    .RECONCILIATION_REQUIRED
+                ),
+                position=position,
+                exit_intent_id=(
+                    exit_intent_id
+                ),
+                broker_order_id=(
+                    broker_order_id
+                ),
+                message=message,
+            )
+        )
+
+    def _fail_closed(
+        self,
+        *,
+        instruction: ForceExitInstruction,
+        changed_at: datetime,
+        message: str,
+    ) -> TradingDayForceExitInstructionResult:
+        position = (
+            self._position_registry.require(
+                instruction.position_id
+            )
+        )
+
+        if (
+            instruction.action
+            is not ForceExitAction.NONE
+            and position.open_quantity > 0
+            and position.state
+            is not ManagedPositionState.CLOSED
+        ):
+            try:
+                position = (
+                    self._position_lifecycle_manager
+                    .mark_reconciliation_required(
+                        position_id=(
+                            instruction.position_id
+                        ),
+                        changed_at=changed_at,
+                    )
+                )
+
+                self._exit_persistence\
+                    .persist_managed_position_state(
+                        managed_position=position
+                    )
+
+            except Exception as persistence_exc:
+                message = (
+                    f"{message}; failed to persist "
+                    "fail-closed position state: "
+                    f"{persistence_exc}"
+                )
+
+        return (
+            TradingDayForceExitInstructionResult(
+                instruction=instruction,
+                status=(
+                    TradingDayForceExitRuntimeStatus
+                    .FAILED_CLOSED
+                ),
+                position=position,
+                message=message,
+            )
+        )
+
+
+__all__ += [
+    "TradingDayForceExitInstructionResult",
+    "TradingDayForceExitRuntimeCoordinator",
+    "TradingDayForceExitRuntimeResult",
+    "TradingDayForceExitRuntimeStatus",
 ]

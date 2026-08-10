@@ -52,6 +52,20 @@ class PositionLifecycleManager:
     ) -> None:
         self._registry = registry
 
+    @property
+    def registry(
+        self,
+    ) -> PositionRegistry:
+        """
+        Return the exact M07 PositionRegistry owned by
+        this lifecycle manager.
+
+        Read-only identity access is required by application
+        composition and crash-restart recovery.
+        """
+
+        return self._registry
+
     def mark_exit_pending(
         self,
         *,

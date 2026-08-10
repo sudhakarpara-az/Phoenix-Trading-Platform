@@ -360,6 +360,118 @@ class OrderStateMachine:
                 self._states
             )
 
+    def restore_state(
+        self,
+        *,
+        intent_id: OrderIntentId,
+        current_state: OrderLifecycleState,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> OrderStateSnapshot:
+        """
+        Restore the authoritative current lifecycle state of
+        one durable order.
+
+        Recovery does not fabricate historical transitions.
+        Therefore a newly restored order has transition_count
+        zero while preserving its exact current state and
+        timestamps.
+
+        Identical replay is idempotent; conflicting replay
+        fails closed.
+        """
+
+        if not isinstance(
+            intent_id,
+            OrderIntentId,
+        ):
+            raise TypeError(
+                "intent_id must be OrderIntentId"
+            )
+
+        if not isinstance(
+            current_state,
+            OrderLifecycleState,
+        ):
+            raise TypeError(
+                "current_state must be "
+                "OrderLifecycleState"
+            )
+
+        if type(created_at) is not datetime:
+            raise TypeError(
+                "created_at must be a datetime"
+            )
+
+        if type(updated_at) is not datetime:
+            raise TypeError(
+                "updated_at must be a datetime"
+            )
+
+        if updated_at < created_at:
+            raise ValueError(
+                "order recovery updated_at cannot "
+                "be before created_at"
+            )
+
+        key = intent_id.value
+
+        with self._lock:
+            if key in self._states:
+                existing = OrderStateSnapshot(
+                    intent_id=intent_id,
+                    current_state=(
+                        self._states[key]
+                    ),
+                    created_at=(
+                        self._created_at[key]
+                    ),
+                    updated_at=(
+                        self._updated_at[key]
+                    ),
+                    transition_count=len(
+                        self._history[key]
+                    ),
+                )
+
+                if (
+                    existing.current_state
+                    is not current_state
+                    or existing.created_at
+                    != created_at
+                    or existing.updated_at
+                    != updated_at
+                ):
+                    raise RuntimeError(
+                        "conflicting order lifecycle "
+                        "recovery state: "
+                        f"{key}"
+                    )
+
+                return existing
+
+            self._states[key] = (
+                current_state
+            )
+
+            self._created_at[key] = (
+                created_at
+            )
+
+            self._updated_at[key] = (
+                updated_at
+            )
+
+            self._history[key] = []
+
+            return OrderStateSnapshot(
+                intent_id=intent_id,
+                current_state=current_state,
+                created_at=created_at,
+                updated_at=updated_at,
+                transition_count=0,
+            )
+
     def clear(self) -> None:
         """
         Controlled test/session reset only.
