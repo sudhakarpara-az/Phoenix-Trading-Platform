@@ -87,6 +87,7 @@ from src.risk.risk_types import (
     ManagedPosition,
 )
 
+from src.market.market_types import MarketTick
 from src.option_selection.option_types import (
     OptionType,
     SelectedOption,
@@ -95,6 +96,7 @@ from src.services.scheduler import (
     TradingDayEntryGateCoordinator,
     TradingDayEntryGateDecision,
     TradingDayLevelPreparationResult,
+    TradingDayTickMonitoringCoordinator,
 )
 from src.signals.eligibility_policy import (
     EligibilityContext,
@@ -109,6 +111,7 @@ from src.signals.signal_types import (
 )
 from src.strategy.strategy_types import (
     LevelEvent,
+    LevelEventType,
     StrategySessionState,
 )
 
@@ -2260,4 +2263,425 @@ __all__ += [
     "TradingDayEntryRuntimeError",
     "TradingDayEntryRuntimeReason",
     "TradingDayEntryRuntimeResult",
+]
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TradingDayTickRuntimeResult:
+    """
+    Result of processing one normalized selected-option tick
+    through the M10 application runtime.
+
+    One market tick may cause LevelMonitor to report multiple
+    K-level crossings when price gaps across K5/K6/K7.
+
+    Phoenix intentionally permits at most ONE of those events to
+    proceed toward M04/M06 from the same market tick.
+    """
+
+    tick: MarketTick
+
+    events: tuple[
+        LevelEvent,
+        ...
+    ]
+
+    selected_event: LevelEvent | None
+
+    signal_runtime_result: (
+        TradingDaySignalRuntimeResult | None
+    )
+
+    entry_runtime_result: (
+        TradingDayEntryRuntimeResult | None
+    )
+
+    @property
+    def has_level_event(
+        self,
+    ) -> bool:
+        return self.selected_event is not None
+
+    @property
+    def signal_created(
+        self,
+    ) -> bool:
+        return (
+            self.signal_runtime_result is not None
+            and self.signal_runtime_result.created
+        )
+
+    @property
+    def position_opened(
+        self,
+    ) -> bool:
+        return (
+            self.entry_runtime_result is not None
+            and self.entry_runtime_result.position_opened
+        )
+
+
+class TradingDayTickRuntimeError(
+    RuntimeError
+):
+    """
+    T14 could not safely compose tick monitoring with the
+    signal/entry runtime.
+    """
+
+
+class TradingDayTickRuntimeCoordinator:
+    """
+    Final T14 application boundary for one normalized market tick.
+
+    Ownership remains unchanged:
+
+        TradingDayTickMonitoringCoordinator
+            MarketTick -> tuple[LevelEvent, ...]
+
+        TradingDaySignalRuntimeCoordinator
+            selected LevelEvent -> M04
+
+        TradingDayEntryRuntimeCoordinator
+            accepted M04 signal -> M07/M09/M06
+
+    Same-tick multi-level rule:
+
+        - one market tick can never fan out into multiple BUY
+          submissions;
+
+        - for CROSSED_UP, the first traversed price level is the
+          LOWEST crossed level;
+
+        - for CROSSED_DOWN, the first traversed price level is the
+          HIGHEST crossed level;
+
+        - a single TOUCHED event may proceed;
+
+        - ambiguous/malformed multi-event batches fail closed.
+
+    Events not selected from the same tick are deliberately not
+    replayed. They may become eligible only after a later genuine
+    market interaction/re-cross reported by LevelMonitor.
+    """
+
+    def __init__(
+        self,
+        *,
+        tick_monitor:
+            TradingDayTickMonitoringCoordinator,
+        signal_runtime:
+            TradingDaySignalRuntimeCoordinator,
+        entry_runtime:
+            TradingDayEntryRuntimeCoordinator,
+    ) -> None:
+        self._tick_monitor = tick_monitor
+        self._signal_runtime = signal_runtime
+        self._entry_runtime = entry_runtime
+
+        self._validate_composition()
+
+    @property
+    def tick_monitor(
+        self,
+    ) -> TradingDayTickMonitoringCoordinator:
+        return self._tick_monitor
+
+    @property
+    def signal_runtime(
+        self,
+    ) -> TradingDaySignalRuntimeCoordinator:
+        return self._signal_runtime
+
+    @property
+    def entry_runtime(
+        self,
+    ) -> TradingDayEntryRuntimeCoordinator:
+        return self._entry_runtime
+
+    def process_tick(
+        self,
+        tick: MarketTick,
+        *,
+        dry_run: bool,
+    ) -> TradingDayTickRuntimeResult:
+        """
+        Process exactly one normalized market tick.
+
+        At most one LevelEvent is allowed to cross the application
+        boundary into M04/M06 for this tick.
+        """
+
+        if not isinstance(
+            tick,
+            MarketTick,
+        ):
+            raise TypeError(
+                "tick must be a MarketTick"
+            )
+
+        if type(dry_run) is not bool:
+            raise TypeError(
+                "dry_run must be bool"
+            )
+
+        events = (
+            self._tick_monitor
+            .process_tick(
+                tick
+            )
+        )
+
+        self._validate_event_batch(
+            tick=tick,
+            events=events,
+        )
+
+        if not events:
+            return TradingDayTickRuntimeResult(
+                tick=tick,
+                events=(),
+                selected_event=None,
+                signal_runtime_result=None,
+                entry_runtime_result=None,
+            )
+
+        selected_event = (
+            self._select_single_event(
+                events
+            )
+        )
+
+        signal_result = (
+            self._signal_runtime
+            .process_event(
+                selected_event
+            )
+        )
+
+        if not isinstance(
+            signal_result,
+            TradingDaySignalRuntimeResult,
+        ):
+            raise TradingDayTickRuntimeError(
+                "signal runtime returned invalid result"
+            )
+
+        entry_result = (
+            self._entry_runtime
+            .process_signal_result(
+                signal_result,
+                dry_run=dry_run,
+                requested_at=tick.timestamp,
+            )
+        )
+
+        if not isinstance(
+            entry_result,
+            TradingDayEntryRuntimeResult,
+        ):
+            raise TradingDayTickRuntimeError(
+                "entry runtime returned invalid result"
+            )
+
+        if (
+            entry_result.signal_runtime_result
+            is not signal_result
+        ):
+            raise TradingDayTickRuntimeError(
+                "entry runtime result does not belong "
+                "to processed signal result"
+            )
+
+        return TradingDayTickRuntimeResult(
+            tick=tick,
+            events=events,
+            selected_event=selected_event,
+            signal_runtime_result=signal_result,
+            entry_runtime_result=entry_result,
+        )
+
+    def _validate_composition(
+        self,
+    ) -> None:
+        if (
+            self._entry_runtime.signal_runtime
+            is not self._signal_runtime
+        ):
+            raise ValueError(
+                "entry runtime must own the exact "
+                "signal runtime"
+            )
+
+        monitor_scheduler = (
+            self._tick_monitor.scheduler
+        )
+
+        signal_scheduler = (
+            self._signal_runtime
+            .entry_gate
+            .scheduler
+        )
+
+        if (
+            monitor_scheduler
+            is not signal_scheduler
+        ):
+            raise ValueError(
+                "tick monitor and signal runtime must "
+                "share the exact TradingDayScheduler"
+            )
+
+        preparation = (
+            self._tick_monitor.preparation
+        )
+
+        if (
+            preparation.selected_call
+            != self._signal_runtime.selected_call
+        ):
+            raise ValueError(
+                "tick monitor selected CALL does not "
+                "match signal runtime selected CALL"
+            )
+
+        if (
+            preparation.selected_put
+            != self._signal_runtime.selected_put
+        ):
+            raise ValueError(
+                "tick monitor selected PUT does not "
+                "match signal runtime selected PUT"
+            )
+
+    @staticmethod
+    def _validate_event_batch(
+        *,
+        tick: MarketTick,
+        events: tuple[
+            LevelEvent,
+            ...
+        ],
+    ) -> None:
+        if type(events) is not tuple:
+            raise TradingDayTickRuntimeError(
+                "tick monitor must return tuple[LevelEvent, ...]"
+            )
+
+        seen_levels = set()
+
+        for event in events:
+            if not isinstance(
+                event,
+                LevelEvent,
+            ):
+                raise TradingDayTickRuntimeError(
+                    "tick monitor returned non-LevelEvent"
+                )
+
+            if (
+                event.instrument_security_id
+                != tick.security_id
+            ):
+                raise TradingDayTickRuntimeError(
+                    "level event security ID does not "
+                    "match source tick"
+                )
+
+            if (
+                event.instrument_symbol
+                != tick.symbol
+            ):
+                raise TradingDayTickRuntimeError(
+                    "level event symbol does not "
+                    "match source tick"
+                )
+
+            if (
+                event.trading_date
+                != tick.timestamp.date()
+            ):
+                raise TradingDayTickRuntimeError(
+                    "level event trading date does not "
+                    "match source tick"
+                )
+
+            if (
+                event.timestamp
+                != tick.timestamp
+            ):
+                raise TradingDayTickRuntimeError(
+                    "level event timestamp does not "
+                    "match source tick"
+                )
+
+            if (
+                event.market_price
+                != tick.ltp
+            ):
+                raise TradingDayTickRuntimeError(
+                    "level event market price does not "
+                    "match source tick"
+                )
+
+            if event.level in seen_levels:
+                raise TradingDayTickRuntimeError(
+                    "tick monitor returned duplicate "
+                    "level event"
+                )
+
+            seen_levels.add(
+                event.level
+            )
+
+    @staticmethod
+    def _select_single_event(
+        events: tuple[
+            LevelEvent,
+            ...
+        ],
+    ) -> LevelEvent:
+        if not events:
+            raise ValueError(
+                "cannot select from empty event batch"
+            )
+
+        if len(events) == 1:
+            return events[0]
+
+        event_types = {
+            event.event_type
+            for event in events
+        }
+
+        if event_types == {
+            LevelEventType.CROSSED_UP
+        }:
+            return min(
+                events,
+                key=lambda event:
+                    event.level_price,
+            )
+
+        if event_types == {
+            LevelEventType.CROSSED_DOWN
+        }:
+            return max(
+                events,
+                key=lambda event:
+                    event.level_price,
+            )
+
+        raise TradingDayTickRuntimeError(
+            "ambiguous same-tick multi-level event batch"
+        )
+
+
+__all__ += [
+    "TradingDayTickRuntimeCoordinator",
+    "TradingDayTickRuntimeError",
+    "TradingDayTickRuntimeResult",
 ]
