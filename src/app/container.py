@@ -73,6 +73,9 @@ from src.database.repositories.sqlalchemy_repositories import (
     SQLAlchemyPositionRepository,
     SQLAlchemyRuntimeSessionRepository,
     SQLAlchemySignalRepository,
+    SQLAlchemyTenantRepository,
+    SQLAlchemyUserBrokerAccountMembershipRepository,
+    SQLAlchemyUserRepository,
 )
 from src.database.schema import (
     create_schema,
@@ -224,6 +227,12 @@ class PhoenixPersistenceContainer:
     account_eligibility_repository: SQLAlchemyAccountEligibilitySnapshotRepository
     trading_control_repository: SQLAlchemyTradingControlRepository
 
+    tenant_repository: SQLAlchemyTenantRepository
+    user_repository: SQLAlchemyUserRepository
+    user_broker_account_membership_repository: (
+        SQLAlchemyUserBrokerAccountMembershipRepository
+    )
+
 
 def build_persistence_foundation(
     *,
@@ -344,6 +353,21 @@ def build_persistence_foundation(
             ),
             trading_control_repository=(
                 SQLAlchemyTradingControlRepository(
+                    sessions=session_manager
+                )
+            ),
+            tenant_repository=(
+                SQLAlchemyTenantRepository(
+                    sessions=session_manager
+                )
+            ),
+            user_repository=(
+                SQLAlchemyUserRepository(
+                    sessions=session_manager
+                )
+            ),
+            user_broker_account_membership_repository=(
+                SQLAlchemyUserBrokerAccountMembershipRepository(
                     sessions=session_manager
                 )
             ),

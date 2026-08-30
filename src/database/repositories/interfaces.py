@@ -6,7 +6,6 @@ by the Phoenix runtime.
 
 No SQLAlchemy imports belong in this module.
 """
-from typing import Protocol
 from __future__ import annotations
 
 from typing import (
@@ -20,6 +19,9 @@ from src.database.schema import (
     BrokerAccountRecord,
     BrokerConnectivitySnapshotRecord,
     BrokerSessionRecord,
+    TenantRecord,
+    UserBrokerAccountMembershipRecord,
+    UserRecord,
 )
 
 T = TypeVar("T")
@@ -372,4 +374,138 @@ class AccountEligibilitySnapshotRepository(Protocol):
         broker: str,
         account_id: str,
     ) -> AccountEligibilitySnapshotRecord | None:
+        ...
+
+
+# ============================================================
+# M15 Tenant / User / Account membership repositories
+# ============================================================
+
+
+class TenantRepository(Protocol):
+    def add(
+        self,
+        record: TenantRecord,
+    ) -> TenantRecord:
+        ...
+
+    def get(
+        self,
+        tenant_id: str,
+    ) -> TenantRecord | None:
+        ...
+
+    def require(
+        self,
+        tenant_id: str,
+    ) -> TenantRecord:
+        ...
+
+    def update(
+        self,
+        record: TenantRecord,
+    ) -> TenantRecord:
+        ...
+
+    def list_all(
+        self,
+    ) -> tuple[
+        TenantRecord,
+        ...
+    ]:
+        ...
+
+
+class UserRepository(Protocol):
+    def add(
+        self,
+        record: UserRecord,
+    ) -> UserRecord:
+        ...
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserRecord | None:
+        ...
+
+    def require(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserRecord:
+        ...
+
+    def update(
+        self,
+        record: UserRecord,
+    ) -> UserRecord:
+        ...
+
+    def list_for_tenant(
+        self,
+        tenant_id: str,
+    ) -> tuple[
+        UserRecord,
+        ...
+    ]:
+        ...
+
+
+class UserBrokerAccountMembershipRepository(
+    Protocol,
+):
+    def add(
+        self,
+        record:
+            UserBrokerAccountMembershipRecord,
+    ) -> UserBrokerAccountMembershipRecord:
+        ...
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        broker: str,
+        account_id: str,
+    ) -> (
+        UserBrokerAccountMembershipRecord
+        | None
+    ):
+        ...
+
+    def get_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> (
+        UserBrokerAccountMembershipRecord
+        | None
+    ):
+        ...
+
+    def list_for_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> tuple[
+        UserBrokerAccountMembershipRecord,
+        ...
+    ]:
+        ...
+
+    def remove(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        broker: str,
+        account_id: str,
+    ) -> bool:
         ...

@@ -12,6 +12,8 @@ Defines durable relational storage for:
     - P&L snapshots
     - risk snapshots
     - audit events
+    - M15 tenants and users
+    - M15 user-to-broker-account memberships
 
 Important architectural rule:
 
@@ -1288,7 +1290,7 @@ def create_schema(
     engine,
 ) -> None:
     """
-    Create all Phoenix M08 tables.
+    Create all registered Phoenix persistence tables.
 
     SQLAlchemy create_all() is idempotent for tables already
     present.
@@ -1789,5 +1791,204 @@ class AccountEligibilitySnapshotRecord(Base):
             "AND reason != 'ELIGIBLE'"
             ")",
             name="ck_account_eligibility_consistency",
+        ),
+    )
+
+# ============================================================
+# M15 Tenant / User / Account membership persistence
+# ============================================================
+
+
+class TenantRecord(Base):
+    """
+    Durable M15 tenant identity and lifecycle state.
+
+    Authentication credentials, password hashes, tokens, and
+    subscription state are deliberately not stored here.
+    """
+
+    __tablename__ = "tenants"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(tenant_id)) > 0",
+            name="ck_tenants_id_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(name)) > 0",
+            name="ck_tenants_name_nonempty",
+        ),
+    )
+
+
+class UserRecord(Base):
+    """
+    Durable M15 user identity, tenant ownership, and role.
+
+    Login credentials and sessions are introduced separately.
+    """
+
+    __tablename__ = "users"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "tenants.tenant_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    role: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    display_name: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(user_id)) > 0",
+            name="ck_users_id_nonempty",
+        ),
+        CheckConstraint(
+            "role IN ('ADMIN', 'USER')",
+            name="ck_users_role",
+        ),
+        CheckConstraint(
+            "display_name IS NULL "
+            "OR length(trim(display_name)) > 0",
+            name="ck_users_display_name",
+        ),
+    )
+
+
+class UserBrokerAccountMembershipRecord(Base):
+    """
+    Durable ownership of one M09 broker account by one M15 user.
+
+    The global account uniqueness constraint prevents accidental
+    cross-user or cross-tenant assignment of the same broker
+    account.
+    """
+
+    __tablename__ = (
+        "user_broker_account_memberships"
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        primary_key=True,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            [
+                "users.tenant_id",
+                "users.user_id",
+            ],
+            ondelete="CASCADE",
+            name=(
+                "fk_user_broker_account_"
+                "memberships_user"
+            ),
+        ),
+        ForeignKeyConstraint(
+            ["broker", "account_id"],
+            [
+                "broker_accounts.broker",
+                "broker_accounts.account_id",
+            ],
+            ondelete="CASCADE",
+            name=(
+                "fk_user_broker_account_"
+                "memberships_account"
+            ),
+        ),
+        UniqueConstraint(
+            "broker",
+            "account_id",
+            name=(
+                "uq_user_broker_account_"
+                "memberships_account"
+            ),
+        ),
+        CheckConstraint(
+            "broker IN ('DHAN')",
+            name=(
+                "ck_user_broker_account_"
+                "memberships_broker"
+            ),
         ),
     )

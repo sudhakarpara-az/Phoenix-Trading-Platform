@@ -52,6 +52,9 @@ from src.database.schema import (
     BrokerAccountRecord,
     BrokerConnectivitySnapshotRecord,
     BrokerSessionRecord,
+    TenantRecord,
+    UserBrokerAccountMembershipRecord,
+    UserRecord,
 )
 from src.database.session import (
     DatabaseSessionManager,
@@ -1590,3 +1593,365 @@ class SQLAlchemyAccountEligibilitySnapshotRepository:
             )
 
             return record
+
+
+# ============================================================
+# M15 Tenant / User / Account membership repositories
+# ============================================================
+
+
+class SQLAlchemyTenantRepository:
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: TenantRecord,
+    ) -> TenantRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        tenant_id: str,
+    ) -> TenantRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                TenantRecord,
+                tenant_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        tenant_id: str,
+    ) -> TenantRecord:
+        record = self.get(
+            tenant_id
+        )
+
+        if record is None:
+            raise KeyError(
+                "tenant not found: "
+                f"{tenant_id}"
+            )
+
+        return record
+
+    def update(
+        self,
+        record: TenantRecord,
+    ) -> TenantRecord:
+        with self._sessions.session_scope() as session:
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
+
+    def list_all(
+        self,
+    ) -> tuple[
+        TenantRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    TenantRecord
+                )
+                .order_by(
+                    TenantRecord.tenant_id
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+
+class SQLAlchemyUserRepository:
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: UserRecord,
+    ) -> UserRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                UserRecord,
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                },
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserRecord:
+        record = self.get(
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if record is None:
+            raise KeyError(
+                "user not found: "
+                f"{tenant_id}:{user_id}"
+            )
+
+        return record
+
+    def update(
+        self,
+        record: UserRecord,
+    ) -> UserRecord:
+        with self._sessions.session_scope() as session:
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
+
+    def list_for_tenant(
+        self,
+        tenant_id: str,
+    ) -> tuple[
+        UserRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    UserRecord
+                )
+                .filter(
+                    UserRecord.tenant_id
+                    == tenant_id
+                )
+                .order_by(
+                    UserRecord.user_id
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+
+class SQLAlchemyUserBrokerAccountMembershipRepository:
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record:
+            UserBrokerAccountMembershipRecord,
+    ) -> UserBrokerAccountMembershipRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        broker: str,
+        account_id: str,
+    ) -> (
+        UserBrokerAccountMembershipRecord
+        | None
+    ):
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                UserBrokerAccountMembershipRecord,
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "broker": broker,
+                    "account_id": account_id,
+                },
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def get_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> (
+        UserBrokerAccountMembershipRecord
+        | None
+    ):
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    UserBrokerAccountMembershipRecord
+                )
+                .filter(
+                    UserBrokerAccountMembershipRecord.broker
+                    == broker,
+                    UserBrokerAccountMembershipRecord.account_id
+                    == account_id,
+                )
+                .one_or_none()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def list_for_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> tuple[
+        UserBrokerAccountMembershipRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    UserBrokerAccountMembershipRecord
+                )
+                .filter(
+                    UserBrokerAccountMembershipRecord.tenant_id
+                    == tenant_id,
+                    UserBrokerAccountMembershipRecord.user_id
+                    == user_id,
+                )
+                .order_by(
+                    UserBrokerAccountMembershipRecord.broker,
+                    UserBrokerAccountMembershipRecord.account_id,
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
+
+    def remove(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        broker: str,
+        account_id: str,
+    ) -> bool:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                UserBrokerAccountMembershipRecord,
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "broker": broker,
+                    "account_id": account_id,
+                },
+            )
+
+            if record is None:
+                return False
+
+            session.delete(
+                record
+            )
+
+            return True

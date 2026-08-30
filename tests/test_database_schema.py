@@ -75,6 +75,11 @@ EXPECTED_TABLES = {
     "account_health_snapshots",
     "account_eligibility_snapshots",
     "trading_control_states",
+
+    # M15 Tenant / User / Account membership persistence
+    "tenants",
+    "users",
+    "user_broker_account_memberships",
 }
 
 
