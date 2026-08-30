@@ -15,6 +15,7 @@ Defines durable relational storage for:
     - M15 tenants and users
     - M15 user-to-broker-account memberships
     - M15 user password credentials
+    - M15 application sessions
 
 Important architectural rule:
 
@@ -1967,6 +1968,102 @@ class UserPasswordCredentialRecord(Base):
             name=(
                 "ck_user_password_credentials_hash"
             ),
+        ),
+    )
+
+
+class ApplicationSessionRecord(Base):
+    """
+    Durable M15 application-session lifecycle.
+
+    token_digest is the SHA-256 digest of an opaque application bearer
+    token. The raw bearer token must never be persisted.
+    """
+
+    __tablename__ = "application_sessions"
+
+    session_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    token_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            [
+                "users.tenant_id",
+                "users.user_id",
+            ],
+            ondelete="CASCADE",
+            name=(
+                "fk_application_sessions_user"
+            ),
+        ),
+        UniqueConstraint(
+            "token_digest",
+            name=(
+                "uq_application_sessions_token_digest"
+            ),
+        ),
+        CheckConstraint(
+            "length(trim(session_id)) > 0",
+            name=(
+                "ck_application_sessions_id_nonempty"
+            ),
+        ),
+        CheckConstraint(
+            "length(token_digest) = 64",
+            name=(
+                "ck_application_sessions_digest_length"
+            ),
+        ),
+        CheckConstraint(
+            "expires_at > issued_at",
+            name=(
+                "ck_application_sessions_expiry"
+            ),
+        ),
+        CheckConstraint(
+            "revoked_at IS NULL "
+            "OR revoked_at >= issued_at",
+            name=(
+                "ck_application_sessions_revocation"
+            ),
+        ),
+        Index(
+            "ix_application_sessions_user",
+            "tenant_id",
+            "user_id",
         ),
     )
 

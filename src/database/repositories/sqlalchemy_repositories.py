@@ -49,6 +49,7 @@ from src.database.schema import (
     AccountEligibilitySnapshotRecord,
     AccountFundSnapshotRecord,
     AccountHealthSnapshotRecord,
+    ApplicationSessionRecord,
     BrokerAccountRecord,
     BrokerConnectivitySnapshotRecord,
     BrokerSessionRecord,
@@ -1599,6 +1600,139 @@ class SQLAlchemyAccountEligibilitySnapshotRepository:
 # ============================================================
 # M15 Tenant / User / Account membership repositories
 # ============================================================
+
+
+class SQLAlchemyApplicationSessionRepository:
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: ApplicationSessionRecord,
+    ) -> ApplicationSessionRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        session_id: str,
+    ) -> ApplicationSessionRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                ApplicationSessionRecord,
+                session_id,
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        session_id: str,
+    ) -> ApplicationSessionRecord:
+        record = self.get(
+            session_id
+        )
+
+        if record is None:
+            raise KeyError(
+                "application session not found: "
+                f"{session_id}"
+            )
+
+        return record
+
+    def get_by_token_digest(
+        self,
+        token_digest: str,
+    ) -> ApplicationSessionRecord | None:
+        with self._sessions.session_scope() as session:
+            record = (
+                session.query(
+                    ApplicationSessionRecord
+                )
+                .filter(
+                    ApplicationSessionRecord.token_digest
+                    == token_digest
+                )
+                .one_or_none()
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def update(
+        self,
+        record: ApplicationSessionRecord,
+    ) -> ApplicationSessionRecord:
+        with self._sessions.session_scope() as session:
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
+
+    def list_for_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> tuple[
+        ApplicationSessionRecord,
+        ...
+    ]:
+        with self._sessions.session_scope() as session:
+            records = (
+                session.query(
+                    ApplicationSessionRecord
+                )
+                .filter(
+                    ApplicationSessionRecord.tenant_id
+                    == tenant_id,
+                    ApplicationSessionRecord.user_id
+                    == user_id,
+                )
+                .order_by(
+                    ApplicationSessionRecord.issued_at,
+                    ApplicationSessionRecord.session_id,
+                )
+                .all()
+            )
+
+            for record in records:
+                session.expunge(
+                    record
+                )
+
+            return tuple(
+                records
+            )
 
 
 class SQLAlchemyTenantRepository:

@@ -17,7 +17,10 @@ from src.app.trading_control import (
 from src.database.repositories.sqlalchemy_repositories import SQLAlchemyTradingControlRepository
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import (
+    datetime,
+    timedelta,
+)
 from typing import (
     Any,
     Callable,
@@ -63,6 +66,7 @@ from src.database.repositories.sqlalchemy_repositories import (
     SQLAlchemyAccountEligibilitySnapshotRepository,
     SQLAlchemyAccountFundSnapshotRepository,
     SQLAlchemyAccountHealthSnapshotRepository,
+    SQLAlchemyApplicationSessionRepository,
     SQLAlchemyAuditEventRepository,
     SQLAlchemyBrokerAccountRepository,
     SQLAlchemyBrokerConnectivitySnapshotRepository,
@@ -228,6 +232,9 @@ class PhoenixPersistenceContainer:
     account_eligibility_repository: SQLAlchemyAccountEligibilitySnapshotRepository
     trading_control_repository: SQLAlchemyTradingControlRepository
 
+    application_session_repository: (
+        SQLAlchemyApplicationSessionRepository
+    )
     tenant_repository: SQLAlchemyTenantRepository
     user_repository: SQLAlchemyUserRepository
     user_password_credential_repository: (
@@ -360,6 +367,11 @@ def build_persistence_foundation(
                     sessions=session_manager
                 )
             ),
+            application_session_repository=(
+                SQLAlchemyApplicationSessionRepository(
+                    sessions=session_manager
+                )
+            ),
             tenant_repository=(
                 SQLAlchemyTenantRepository(
                     sessions=session_manager
@@ -392,6 +404,149 @@ def build_persistence_foundation(
         raise
 
 
+
+
+
+# ============================================================
+# M15 Login / Authentication / Application Sessions
+# ============================================================
+
+from src.api.application_session import (
+    ApplicationLoginService,
+    ApplicationSessionClock,
+    ApplicationSessionService,
+    SessionTokenGenerator,
+)
+from src.api.authentication import (
+    AuthenticationService,
+    PasswordHasher,
+    Pbkdf2PasswordHasher,
+)
+from src.database.application_session_persistence import (
+    RepositoryApplicationSessionStore,
+)
+from src.database.authentication_persistence import (
+    RepositoryAuthenticationIdentityReader,
+    RepositoryPasswordCredentialReader,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class PhoenixAuthenticationContainer:
+    """
+    Shared M15 password-authentication and application-session graph.
+
+    Every reader and store retains the exact repositories already
+    owned by PhoenixPersistenceContainer. Construction performs no
+    persistence write and issues no application session.
+    """
+
+    persistence: PhoenixPersistenceContainer
+
+    identity_reader: RepositoryAuthenticationIdentityReader
+    credential_reader: RepositoryPasswordCredentialReader
+    password_hasher: PasswordHasher
+    authentication: AuthenticationService
+
+    session_store: RepositoryApplicationSessionStore
+    sessions: ApplicationSessionService
+    login: ApplicationLoginService
+
+
+def build_authentication_foundation(
+    *,
+    persistence: PhoenixPersistenceContainer,
+    clock: ApplicationSessionClock,
+    password_hasher: PasswordHasher | None = None,
+    token_generator: SessionTokenGenerator | None = None,
+    session_lifetime: timedelta = timedelta(
+        hours=8
+    ),
+) -> PhoenixAuthenticationContainer:
+    """
+    Compose M15 authentication over exact existing persistence owners.
+
+    The password hasher defaults to PBKDF2-HMAC-SHA256 and the session
+    service defaults to cryptographically secure opaque token
+    generation. Configuration externalization remains owned by M16.
+    """
+
+    if not isinstance(
+        persistence,
+        PhoenixPersistenceContainer,
+    ):
+        raise TypeError(
+            "persistence must be PhoenixPersistenceContainer"
+        )
+
+    if clock is None:
+        raise TypeError(
+            "clock cannot be None"
+        )
+
+    identity_reader = (
+        RepositoryAuthenticationIdentityReader(
+            tenants=persistence.tenant_repository,
+            users=persistence.user_repository,
+            memberships=(
+                persistence
+                .user_broker_account_membership_repository
+            ),
+        )
+    )
+    credential_reader = (
+        RepositoryPasswordCredentialReader(
+            credentials=(
+                persistence
+                .user_password_credential_repository
+            )
+        )
+    )
+    resolved_password_hasher = (
+        password_hasher
+        if password_hasher is not None
+        else Pbkdf2PasswordHasher()
+    )
+    authentication = AuthenticationService(
+        identities=identity_reader,
+        credentials=credential_reader,
+        password_hasher=resolved_password_hasher,
+    )
+    session_store = (
+        RepositoryApplicationSessionStore(
+            sessions=(
+                persistence
+                .application_session_repository
+            )
+        )
+    )
+    sessions = ApplicationSessionService(
+        store=session_store,
+        identities=identity_reader,
+        clock=clock,
+        token_generator=token_generator,
+        lifetime=session_lifetime,
+    )
+    login = ApplicationLoginService(
+        authentication=authentication,
+        sessions=sessions,
+    )
+
+    return PhoenixAuthenticationContainer(
+        persistence=persistence,
+        identity_reader=identity_reader,
+        credential_reader=credential_reader,
+        password_hasher=(
+            resolved_password_hasher
+        ),
+        authentication=authentication,
+        session_store=session_store,
+        sessions=sessions,
+        login=login,
+    )
 
 
 @dataclass(
@@ -2626,11 +2781,13 @@ def build_operator_api_foundation(
 
 
 __all__ = [
+    "PhoenixAuthenticationContainer",
     "PhoenixDhanContainer",
     "PhoenixExitRuntimeContainer",
     "PhoenixPersistenceContainer",
     "PhoenixRuntimeStartupContainer",
     "PhoenixTradingRuntimeContainer",
+    "build_authentication_foundation",
     "build_dhan_foundation",
     "build_exit_runtime_foundation",
     "build_persistence_foundation",

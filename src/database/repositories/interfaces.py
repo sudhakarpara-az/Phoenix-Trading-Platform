@@ -16,6 +16,7 @@ from src.database.schema import (
     AccountEligibilitySnapshotRecord,
     AccountFundSnapshotRecord,
     AccountHealthSnapshotRecord,
+    ApplicationSessionRecord,
     BrokerAccountRecord,
     BrokerConnectivitySnapshotRecord,
     BrokerSessionRecord,
@@ -381,6 +382,51 @@ class AccountEligibilitySnapshotRepository(Protocol):
 # ============================================================
 # M15 Tenant / User / Account membership repositories
 # ============================================================
+
+
+class ApplicationSessionRepository(
+    Protocol,
+):
+    def add(
+        self,
+        record: ApplicationSessionRecord,
+    ) -> ApplicationSessionRecord:
+        ...
+
+    def get(
+        self,
+        session_id: str,
+    ) -> ApplicationSessionRecord | None:
+        ...
+
+    def require(
+        self,
+        session_id: str,
+    ) -> ApplicationSessionRecord:
+        ...
+
+    def get_by_token_digest(
+        self,
+        token_digest: str,
+    ) -> ApplicationSessionRecord | None:
+        ...
+
+    def update(
+        self,
+        record: ApplicationSessionRecord,
+    ) -> ApplicationSessionRecord:
+        ...
+
+    def list_for_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> tuple[
+        ApplicationSessionRecord,
+        ...
+    ]:
+        ...
 
 
 class TenantRepository(Protocol):

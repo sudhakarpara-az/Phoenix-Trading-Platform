@@ -528,6 +528,10 @@ def test_persistence_container_reuses_shared_sessions(
 
     try:
         repositories = (
+            (
+                persistence
+                .application_session_repository
+            ),
             persistence.tenant_repository,
             persistence.user_repository,
             (
@@ -546,6 +550,15 @@ def test_persistence_container_reuses_shared_sessions(
                 is persistence.sessions
             )
 
+        assert (
+            persistence
+            .application_session_repository
+            .list_for_user(
+                tenant_id="TENANT-A",
+                user_id="USER-001",
+            )
+            == ()
+        )
         assert (
             persistence.tenant_repository
             .list_all()
