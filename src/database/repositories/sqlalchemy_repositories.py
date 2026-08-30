@@ -54,6 +54,7 @@ from src.database.schema import (
     BrokerSessionRecord,
     TenantRecord,
     UserBrokerAccountMembershipRecord,
+    UserPasswordCredentialRecord,
     UserRecord,
 )
 from src.database.session import (
@@ -1807,6 +1808,86 @@ class SQLAlchemyUserRepository:
             return tuple(
                 records
             )
+
+
+class SQLAlchemyUserPasswordCredentialRepository:
+    def __init__(
+        self,
+        *,
+        sessions: DatabaseSessionManager,
+    ) -> None:
+        self._sessions = sessions
+
+    def add(
+        self,
+        record: UserPasswordCredentialRecord,
+    ) -> UserPasswordCredentialRecord:
+        with self._sessions.session_scope() as session:
+            session.add(
+                record
+            )
+
+        return record
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserPasswordCredentialRecord | None:
+        with self._sessions.session_scope() as session:
+            record = session.get(
+                UserPasswordCredentialRecord,
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                },
+            )
+
+            if record is None:
+                return None
+
+            session.expunge(
+                record
+            )
+
+            return record
+
+    def require(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserPasswordCredentialRecord:
+        record = self.get(
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if record is None:
+            raise KeyError(
+                "user password credential not found: "
+                f"{tenant_id}:{user_id}"
+            )
+
+        return record
+
+    def update(
+        self,
+        record: UserPasswordCredentialRecord,
+    ) -> UserPasswordCredentialRecord:
+        with self._sessions.session_scope() as session:
+            merged = session.merge(
+                record
+            )
+
+            session.flush()
+
+            session.expunge(
+                merged
+            )
+
+            return merged
 
 
 class SQLAlchemyUserBrokerAccountMembershipRepository:

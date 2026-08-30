@@ -14,6 +14,7 @@ Defines durable relational storage for:
     - audit events
     - M15 tenants and users
     - M15 user-to-broker-account memberships
+    - M15 user password credentials
 
 Important architectural rule:
 
@@ -1909,6 +1910,63 @@ class UserRecord(Base):
             "display_name IS NULL "
             "OR length(trim(display_name)) > 0",
             name="ck_users_display_name",
+        ),
+    )
+
+
+class UserPasswordCredentialRecord(Base):
+    """
+    Durable derived password credential for one M15 user.
+
+    Only a versioned password hash is persisted. Plaintext passwords,
+    broker credentials, access tokens, and session tokens must never
+    be stored in this table.
+    """
+
+    __tablename__ = "user_password_credentials"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+
+    password_hash: Mapped[str] = mapped_column(
+        String(1024),
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            [
+                "users.tenant_id",
+                "users.user_id",
+            ],
+            ondelete="CASCADE",
+            name=(
+                "fk_user_password_credentials_user"
+            ),
+        ),
+        CheckConstraint(
+            "length(trim(password_hash)) > 0",
+            name=(
+                "ck_user_password_credentials_hash"
+            ),
         ),
     )
 

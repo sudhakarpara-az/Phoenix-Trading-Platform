@@ -532,6 +532,10 @@ def test_persistence_container_reuses_shared_sessions(
             persistence.user_repository,
             (
                 persistence
+                .user_password_credential_repository
+            ),
+            (
+                persistence
                 .user_broker_account_membership_repository
             ),
         )
@@ -551,6 +555,15 @@ def test_persistence_container_reuses_shared_sessions(
             persistence.user_repository
             .list_for_tenant("TENANT-A")
             == ()
+        )
+        assert (
+            persistence
+            .user_password_credential_repository
+            .get(
+                tenant_id="TENANT-A",
+                user_id="USER-001",
+            )
+            is None
         )
 
     finally:

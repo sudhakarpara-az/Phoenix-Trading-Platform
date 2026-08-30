@@ -80,6 +80,7 @@ EXPECTED_TABLES = {
     "tenants",
     "users",
     "user_broker_account_memberships",
+    "user_password_credentials",
 }
 
 

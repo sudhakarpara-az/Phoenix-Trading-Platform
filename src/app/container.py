@@ -75,6 +75,7 @@ from src.database.repositories.sqlalchemy_repositories import (
     SQLAlchemySignalRepository,
     SQLAlchemyTenantRepository,
     SQLAlchemyUserBrokerAccountMembershipRepository,
+    SQLAlchemyUserPasswordCredentialRepository,
     SQLAlchemyUserRepository,
 )
 from src.database.schema import (
@@ -229,6 +230,9 @@ class PhoenixPersistenceContainer:
 
     tenant_repository: SQLAlchemyTenantRepository
     user_repository: SQLAlchemyUserRepository
+    user_password_credential_repository: (
+        SQLAlchemyUserPasswordCredentialRepository
+    )
     user_broker_account_membership_repository: (
         SQLAlchemyUserBrokerAccountMembershipRepository
     )
@@ -363,6 +367,11 @@ def build_persistence_foundation(
             ),
             user_repository=(
                 SQLAlchemyUserRepository(
+                    sessions=session_manager
+                )
+            ),
+            user_password_credential_repository=(
+                SQLAlchemyUserPasswordCredentialRepository(
                     sessions=session_manager
                 )
             ),

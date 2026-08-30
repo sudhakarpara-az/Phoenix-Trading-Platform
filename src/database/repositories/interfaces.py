@@ -21,6 +21,7 @@ from src.database.schema import (
     BrokerSessionRecord,
     TenantRecord,
     UserBrokerAccountMembershipRecord,
+    UserPasswordCredentialRecord,
     UserRecord,
 )
 
@@ -452,6 +453,38 @@ class UserRepository(Protocol):
         UserRecord,
         ...
     ]:
+        ...
+
+
+class UserPasswordCredentialRepository(
+    Protocol,
+):
+    def add(
+        self,
+        record: UserPasswordCredentialRecord,
+    ) -> UserPasswordCredentialRecord:
+        ...
+
+    def get(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserPasswordCredentialRecord | None:
+        ...
+
+    def require(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> UserPasswordCredentialRecord:
+        ...
+
+    def update(
+        self,
+        record: UserPasswordCredentialRecord,
+    ) -> UserPasswordCredentialRecord:
         ...
 
 
