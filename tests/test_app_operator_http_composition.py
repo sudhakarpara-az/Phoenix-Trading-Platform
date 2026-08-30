@@ -87,6 +87,24 @@ class FakeTransport:
             "by dedicated ASGI test"
         )
 
+    def get_positions(
+        self,
+        request,
+    ):
+        raise AssertionError(
+            "positions route is covered "
+            "by dedicated ASGI test"
+        )
+
+    def get_orders(
+        self,
+        request,
+    ):
+        raise AssertionError(
+            "orders route is covered "
+            "by dedicated ASGI test"
+        )
+
     def get_current_runtime_report(
         self,
         request: OperatorRuntimeReportRequest,
@@ -207,7 +225,7 @@ def test_http_foundation_builds_exact_read_surface() -> None:
 
     assert effective_paths(
         result.app
-    ) == {'/api/v1/operator/status': {'get'}, '/api/v1/operator/strategy': {'get'}, '/api/v1/operator/scheduler': {'get'}, '/api/v1/operator/notifications': {'get'}, '/api/v1/operator/reports/runtime': {'get'}, '/api/v1/operator/reports/daily': {'get'}}
+    ) == {'/api/v1/operator/status': {'get'}, '/api/v1/operator/strategy': {'get'}, '/api/v1/operator/scheduler': {'get'}, '/api/v1/operator/positions': {'get'}, '/api/v1/operator/orders': {'get'}, '/api/v1/operator/notifications': {'get'}, '/api/v1/operator/reports/runtime': {'get'}, '/api/v1/operator/reports/daily': {'get'}}
 
     assert clock.calls == 0
 
@@ -273,7 +291,7 @@ def test_http_composition_exposes_no_write_routes() -> None:
         result.app
     )
 
-    assert len(paths) == 6
+    assert len(paths) == 8
 
     for methods in paths.values():
         assert methods == {

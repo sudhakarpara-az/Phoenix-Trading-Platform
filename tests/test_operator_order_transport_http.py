@@ -1,9 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
 
-from datetime import date
 from datetime import datetime
 from typing import Any
 from typing import cast
@@ -16,11 +15,12 @@ from starlette.types import Scope
 from src.api.operator_http import (
     build_operator_http_app,
 )
-from src.api.operator_scheduler import (
-    OperatorSchedulerView,
+from src.api.operator_orders import (
+    OperatorOrderView,
+    OperatorOrdersView,
 )
 from src.api.operator_transport import (
-    OperatorSchedulerRequest,
+    OperatorOrdersRequest,
     OperatorTransportService,
 )
 
@@ -29,64 +29,46 @@ CAPTURED_AT = datetime(
     2026,
     8,
     31,
-    9,
-    20,
+    12,
+    0,
 )
 
 
-SCHEDULER_VIEW = OperatorSchedulerView(
-    trading_date=date(
-        2026,
-        8,
-        31,
-    ),
-    state="MONITORING",
-    updated_at=datetime(
-        2026,
-        8,
-        31,
-        9,
-        20,
-    ),
-    started_at=datetime(
-        2026,
-        8,
-        31,
-        9,
-        0,
-    ),
-    closed_at=None,
-    failure_message=None,
-    is_terminal=False,
-    can_accept_new_entries=True,
-    can_manage_positions=True,
+ORDER = OperatorOrderView(
+    order_intent_id="ORD-1",
+    runtime_id="RUNTIME-1",
+    signal_id="SIG-1",
+    position_id=None,
+    security_id="41009",
+    symbol="NIFTY-CE",
+    side="BUY",
+    order_type="LIMIT",
+    reason="ENTRY",
+    quantity=65,
+    limit_price=101.0,
+    execution_mode="LIVE",
+    status="SUBMITTED",
+    broker_name="DHAN",
+    broker_order_id="DHAN-1",
+    filled_quantity=0,
+    average_fill_price=None,
+    created_at=CAPTURED_AT,
+    submitted_at=CAPTURED_AT,
+    updated_at=CAPTURED_AT,
+)
+
+
+ORDERS_VIEW = OperatorOrdersView(
+    runtime_id="RUNTIME-1",
+    orders=(ORDER,),
+    open_orders=(ORDER,),
+    total_count=1,
+    open_count=1,
     captured_at=CAPTURED_AT,
 )
 
 
-class _UnusedOrders:
-    def capture(
-        self,
-        *,
-        captured_at,
-    ):
-        raise AssertionError(
-            "orders must not be called"
-        )
-
-
-class _UnusedPositions:
-    def capture(
-        self,
-        *,
-        captured_at,
-    ):
-        raise AssertionError(
-            "positions must not be called"
-        )
-
-
-class FakeScheduler:
+class FakeOrders:
     def __init__(
         self,
     ) -> None:
@@ -98,12 +80,12 @@ class FakeScheduler:
         self,
         *,
         captured_at: datetime,
-    ) -> OperatorSchedulerView:
+    ) -> OperatorOrdersView:
         self.calls.append(
             captured_at
         )
 
-        return SCHEDULER_VIEW
+        return ORDERS_VIEW
 
 
 class UnusedStatus:
@@ -133,6 +115,24 @@ class UnusedNotifications:
         raise AssertionError
 
 
+class UnusedScheduler:
+    def capture(
+        self,
+        *,
+        captured_at: datetime,
+    ) -> Any:
+        raise AssertionError
+
+
+class UnusedPositions:
+    def capture(
+        self,
+        *,
+        captured_at: datetime,
+    ) -> Any:
+        raise AssertionError
+
+
 class UnusedReporting:
     def current_runtime_json(
         self,
@@ -145,7 +145,7 @@ class UnusedReporting:
     def daily_trade_json(
         self,
         *,
-        trading_date: date,
+        trading_date,
         generated_at: datetime,
         indent: int | None = None,
     ) -> str:
@@ -171,72 +171,67 @@ class UnusedControl:
 
 
 def make_transport(
-    scheduler: FakeScheduler,
+    orders: FakeOrders,
 ) -> OperatorTransportService:
     return OperatorTransportService(
         status=UnusedStatus(),
         strategy=UnusedStrategy(),
         notifications=UnusedNotifications(),
-        scheduler=scheduler,
-        positions=_UnusedPositions(),
-        orders=_UnusedOrders(),
+        scheduler=UnusedScheduler(),
+        positions=UnusedPositions(),
+        orders=orders,
         reporting=UnusedReporting(),
         control=UnusedControl(),
     )
 
 
-def test_scheduler_transport_preserves_exact_owner() -> None:
-    scheduler = FakeScheduler()
+def test_order_transport_preserves_exact_owner() -> None:
+    orders = FakeOrders()
 
     transport = make_transport(
-        scheduler
+        orders
     )
 
-    assert (
-        transport.scheduler
-        is scheduler
-    )
+    assert transport.orders is orders
 
 
-def test_scheduler_transport_delegates_once() -> None:
-    scheduler = FakeScheduler()
+def test_order_transport_delegates_once() -> None:
+    orders = FakeOrders()
 
-    transport = make_transport(
-        scheduler
-    )
-
-    result = transport.get_scheduler(
-        OperatorSchedulerRequest(
+    result = make_transport(
+        orders
+    ).get_orders(
+        OperatorOrdersRequest(
             captured_at=CAPTURED_AT,
         )
     )
 
-    assert result is SCHEDULER_VIEW
+    assert result is ORDERS_VIEW
 
-    assert scheduler.calls == [
+    assert orders.calls == [
         CAPTURED_AT,
     ]
 
 
-def test_scheduler_transport_rejects_wrong_request() -> None:
+def test_order_transport_rejects_wrong_request() -> None:
     transport = make_transport(
-        FakeScheduler()
+        FakeOrders()
     )
 
     with pytest.raises(
         TypeError,
-        match="OperatorSchedulerRequest",
+        match="OperatorOrdersRequest",
     ):
-        transport.get_scheduler(
+        transport.get_orders(
             object(),  # type: ignore[arg-type]
         )
 
 
-def test_scheduler_http_uses_public_asgi_contract() -> None:
-    scheduler = FakeScheduler()
+def test_order_http_uses_public_asgi_contract() -> None:
+    orders = FakeOrders()
 
     transport = make_transport(
-        scheduler
+        orders
     )
 
     clock_calls = 0
@@ -253,8 +248,9 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
         clock=clock,
     )
 
-    async def request_scheduler(
+    async def request_orders(
     ) -> list[Message]:
+
         messages: list[
             Message
         ] = []
@@ -307,11 +303,11 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
                 "root_path": "",
                 "path": (
                     "/api/v1/operator/"
-                    "scheduler"
+                    "orders"
                 ),
                 "raw_path": (
                     b"/api/v1/operator/"
-                    b"scheduler"
+                    b"orders"
                 ),
                 "query_string": b"",
                 "headers": [
@@ -333,7 +329,7 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
         return messages
 
     messages = asyncio.run(
-        request_scheduler()
+        request_orders()
     )
 
     start = next(
@@ -365,38 +361,62 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
     )
 
     payload = json.loads(
-        body.decode(
-            "utf-8"
-        )
+        body.decode("utf-8")
     )
 
     assert clock_calls == 1
 
-    assert scheduler.calls == [
+    assert orders.calls == [
         CAPTURED_AT,
     ]
 
     assert (
-        payload["state"]
-        == "MONITORING"
+        payload["runtime_id"]
+        == "RUNTIME-1"
     )
 
     assert (
-        payload["trading_date"]
-        == "2026-08-31"
+        payload["total_count"]
+        == 1
     )
 
     assert (
-        payload["can_accept_new_entries"]
-        is True
+        payload["open_count"]
+        == 1
     )
 
     assert (
-        payload["can_manage_positions"]
-        is True
+        len(payload["orders"])
+        == 1
     )
 
     assert (
-        payload["is_terminal"]
-        is False
+        len(
+            payload["open_orders"]
+        )
+        == 1
+    )
+
+    order = payload["orders"][0]
+
+    assert (
+        order["order_intent_id"]
+        == "ORD-1"
+    )
+
+    assert order["side"] == "BUY"
+
+    assert (
+        order["status"]
+        == "SUBMITTED"
+    )
+
+    assert (
+        order["broker_order_id"]
+        == "DHAN-1"
+    )
+
+    assert (
+        order["filled_quantity"]
+        == 0
     )

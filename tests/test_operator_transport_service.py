@@ -54,6 +54,28 @@ RESUME_RESULT = cast(
 )
 
 
+class _UnusedOrders:
+    def capture(
+        self,
+        *,
+        captured_at,
+    ):
+        raise AssertionError(
+            "orders must not be called"
+        )
+
+
+class _UnusedPositions:
+    def capture(
+        self,
+        *,
+        captured_at,
+    ):
+        raise AssertionError(
+            "positions must not be called"
+        )
+
+
 class FakeStatus:
     def __init__(
         self,
@@ -202,6 +224,8 @@ def make_service():
         strategy=FakeStrategy(),
         notifications=FakeNotifications(),
         scheduler=FakeScheduler(),
+        positions=_UnusedPositions(),
+        orders=_UnusedOrders(),
         reporting=reporting,
         control=control,
     )

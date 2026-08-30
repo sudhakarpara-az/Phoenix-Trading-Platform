@@ -36,6 +36,12 @@ from src.api.operator_notifications import (
 from src.api.operator_scheduler import (
     OperatorSchedulerView,
 )
+from src.api.operator_positions import (
+    OperatorPositionsView,
+)
+from src.api.operator_orders import (
+    OperatorOrdersView,
+)
 from src.api.operator_transport import (
     OperatorDailyReportRequest,
     OperatorRuntimeReportRequest,
@@ -43,6 +49,8 @@ from src.api.operator_transport import (
     OperatorStrategyRequest,
     OperatorNotificationRequest,
     OperatorSchedulerRequest,
+    OperatorPositionsRequest,
+    OperatorOrdersRequest,
 )
 
 
@@ -80,6 +88,18 @@ class OperatorHttpTransportPort(
         self,
         request: OperatorSchedulerRequest,
     ) -> OperatorSchedulerView:
+        ...
+
+    def get_positions(
+        self,
+        request: OperatorPositionsRequest,
+    ) -> OperatorPositionsView:
+        ...
+
+    def get_orders(
+        self,
+        request: OperatorOrdersRequest,
+    ) -> OperatorOrdersView:
         ...
 
     def get_current_runtime_report(
@@ -195,6 +215,34 @@ class OperatorHttpAdapter:
 
             return self._transport.get_scheduler(
                 OperatorSchedulerRequest(
+                    captured_at=captured_at,
+                )
+            )
+
+        @router.get(
+            "/positions",
+            response_model=None,
+        )
+        def get_operator_positions(
+        ) -> OperatorPositionsView:
+            captured_at = self._read_clock()
+
+            return self._transport.get_positions(
+                OperatorPositionsRequest(
+                    captured_at=captured_at,
+                )
+            )
+
+        @router.get(
+            "/orders",
+            response_model=None,
+        )
+        def get_operator_orders(
+        ) -> OperatorOrdersView:
+            captured_at = self._read_clock()
+
+            return self._transport.get_orders(
+                OperatorOrdersRequest(
                     captured_at=captured_at,
                 )
             )

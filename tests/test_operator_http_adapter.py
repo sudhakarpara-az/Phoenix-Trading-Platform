@@ -113,6 +113,24 @@ class FakeTransport:
             "by dedicated ASGI test"
         )
 
+    def get_positions(
+        self,
+        request,
+    ):
+        raise AssertionError(
+            "positions route is covered "
+            "by dedicated ASGI test"
+        )
+
+    def get_orders(
+        self,
+        request,
+    ):
+        raise AssertionError(
+            "orders route is covered "
+            "by dedicated ASGI test"
+        )
+
     def get_current_runtime_report(
         self,
         request: OperatorRuntimeReportRequest,
@@ -365,7 +383,7 @@ def test_app_has_exact_read_only_route_surface() -> None:
 
     assert _openapi_paths(
         app
-    ) == {'/api/v1/operator/status': {'get'}, '/api/v1/operator/strategy': {'get'}, '/api/v1/operator/scheduler': {'get'}, '/api/v1/operator/notifications': {'get'}, '/api/v1/operator/reports/runtime': {'get'}, '/api/v1/operator/reports/daily': {'get'}}
+    ) == {'/api/v1/operator/status': {'get'}, '/api/v1/operator/strategy': {'get'}, '/api/v1/operator/scheduler': {'get'}, '/api/v1/operator/positions': {'get'}, '/api/v1/operator/orders': {'get'}, '/api/v1/operator/notifications': {'get'}, '/api/v1/operator/reports/runtime': {'get'}, '/api/v1/operator/reports/daily': {'get'}}
 
     assert app.docs_url is None
     assert app.redoc_url is None

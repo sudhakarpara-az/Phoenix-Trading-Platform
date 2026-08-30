@@ -2202,6 +2202,12 @@ from src.api.operator_notifications import (
 from src.api.operator_scheduler import (
     OperatorSchedulerService,
 )
+from src.api.operator_positions import (
+    OperatorPositionService,
+)
+from src.api.operator_orders import (
+    OperatorOrderService,
+)
 from src.api.operator_reporting import (
     OperatorReportingService,
 )
@@ -2253,6 +2259,8 @@ class PhoenixOperatorApiContainer:
     operator_reporting: OperatorReportingService
     operator_notifications: OperatorNotificationService
     operator_scheduler: OperatorSchedulerService
+    operator_positions: OperatorPositionService
+    operator_orders: OperatorOrderService
     operator_account: OperatorAccountService
     operator_control: OperatorControlService
     operator_strategy: OperatorStrategyService
@@ -2476,6 +2484,30 @@ def build_operator_api_foundation(
         )
     )
 
+    operator_positions = (
+        OperatorPositionService(
+            registry=(
+                trading_runtime.position_registry
+            ),
+            pnl_tracker=(
+                trading_runtime.pnl_tracker
+            ),
+        )
+    )
+
+    operator_orders = (
+        OperatorOrderService(
+            runtime=(
+                runtime_startup.orchestrator
+            ),
+            order_repository=(
+                trading_runtime
+                .persistence
+                .order_repository
+            ),
+        )
+    )
+
     operator_strategy = (
         OperatorStrategyService(
             signal_runtime=(
@@ -2506,6 +2538,8 @@ def build_operator_api_foundation(
             strategy=operator_strategy,
             notifications=operator_notifications,
             scheduler=operator_scheduler,
+            positions=operator_positions,
+            orders=operator_orders,
             reporting=operator_reporting,
             control=operator_control,
         )
@@ -2523,6 +2557,8 @@ def build_operator_api_foundation(
         operator_account=operator_account,
         operator_control=operator_control,
         operator_scheduler=operator_scheduler,
+        operator_positions=operator_positions,
+        operator_orders=operator_orders,
         operator_strategy=operator_strategy,
         operator_status=operator_status,
         operator_transport=operator_transport,

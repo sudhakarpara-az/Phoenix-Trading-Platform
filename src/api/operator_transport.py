@@ -40,6 +40,12 @@ from src.api.operator_notifications import (
 from src.api.operator_scheduler import (
     OperatorSchedulerView,
 )
+from src.api.operator_positions import (
+    OperatorPositionsView,
+)
+from src.api.operator_orders import (
+    OperatorOrdersView,
+)
 from src.api.operator_status import (
     OperatorStatusView,
 )
@@ -128,6 +134,22 @@ class OperatorNotificationRequest:
     slots=True,
 )
 class OperatorSchedulerRequest:
+    captured_at: datetime
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class OperatorPositionsRequest:
+    captured_at: datetime
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class OperatorOrdersRequest:
     captured_at: datetime
 
 
@@ -266,6 +288,28 @@ class OperatorSchedulerTransportPort(
         ...
 
 
+class OperatorPositionsTransportPort(
+    Protocol,
+):
+    def capture(
+        self,
+        *,
+        captured_at: datetime,
+    ) -> OperatorPositionsView:
+        ...
+
+
+class OperatorOrdersTransportPort(
+    Protocol,
+):
+    def capture(
+        self,
+        *,
+        captured_at: datetime,
+    ) -> OperatorOrdersView:
+        ...
+
+
 class OperatorReportingTransportPort(
     Protocol,
 ):
@@ -322,6 +366,8 @@ class OperatorTransportService:
         strategy: OperatorStrategyTransportPort,
         notifications: OperatorNotificationTransportPort,
         scheduler: OperatorSchedulerTransportPort,
+        positions: OperatorPositionsTransportPort,
+        orders: OperatorOrdersTransportPort,
         reporting: OperatorReportingTransportPort,
         control: OperatorControlTransportPort,
     ) -> None:
@@ -329,6 +375,8 @@ class OperatorTransportService:
         self._strategy = strategy
         self._notifications = notifications
         self._scheduler = scheduler
+        self._positions = positions
+        self._orders = orders
         self._reporting = reporting
         self._control = control
 
@@ -356,6 +404,18 @@ class OperatorTransportService:
         self,
     ) -> OperatorSchedulerTransportPort:
         return self._scheduler
+
+    @property
+    def positions(
+        self,
+    ) -> OperatorPositionsTransportPort:
+        return self._positions
+
+    @property
+    def orders(
+        self,
+    ) -> OperatorOrdersTransportPort:
+        return self._orders
 
     @property
     def reporting(
@@ -434,6 +494,40 @@ class OperatorTransportService:
             )
 
         return self._scheduler.capture(
+            captured_at=request.captured_at,
+        )
+
+    def get_positions(
+        self,
+        request: OperatorPositionsRequest,
+    ) -> OperatorPositionsView:
+        if not isinstance(
+            request,
+            OperatorPositionsRequest,
+        ):
+            raise TypeError(
+                "request must be "
+                "OperatorPositionsRequest"
+            )
+
+        return self._positions.capture(
+            captured_at=request.captured_at,
+        )
+
+    def get_orders(
+        self,
+        request: OperatorOrdersRequest,
+    ) -> OperatorOrdersView:
+        if not isinstance(
+            request,
+            OperatorOrdersRequest,
+        ):
+            raise TypeError(
+                "request must be "
+                "OperatorOrdersRequest"
+            )
+
+        return self._orders.capture(
             captured_at=request.captured_at,
         )
 
@@ -538,4 +632,8 @@ __all__ = [
     "OperatorNotificationTransportPort",
     "OperatorSchedulerRequest",
     "OperatorSchedulerTransportPort",
+    "OperatorPositionsRequest",
+    "OperatorPositionsTransportPort",
+    "OperatorOrdersRequest",
+    "OperatorOrdersTransportPort",
 ]

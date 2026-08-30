@@ -89,6 +89,28 @@ NOTIFICATION_VIEW = (
 )
 
 
+class _UnusedOrders:
+    def capture(
+        self,
+        *,
+        captured_at,
+    ):
+        raise AssertionError(
+            "orders must not be called"
+        )
+
+
+class _UnusedPositions:
+    def capture(
+        self,
+        *,
+        captured_at,
+    ):
+        raise AssertionError(
+            "positions must not be called"
+        )
+
+
 class FakeNotifications:
     def __init__(
         self,
@@ -195,6 +217,8 @@ def make_transport(
         strategy=UnusedStrategy(),
         notifications=notifications,
         scheduler=UnusedScheduler(),
+        positions=_UnusedPositions(),
+        orders=_UnusedOrders(),
         reporting=UnusedReporting(),
         control=UnusedControl(),
     )

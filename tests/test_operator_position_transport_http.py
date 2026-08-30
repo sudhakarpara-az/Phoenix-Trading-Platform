@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-from datetime import date
 from datetime import datetime
 from typing import Any
 from typing import cast
@@ -16,11 +15,12 @@ from starlette.types import Scope
 from src.api.operator_http import (
     build_operator_http_app,
 )
-from src.api.operator_scheduler import (
-    OperatorSchedulerView,
+from src.api.operator_positions import (
+    OperatorPositionView,
+    OperatorPositionsView,
 )
 from src.api.operator_transport import (
-    OperatorSchedulerRequest,
+    OperatorPositionsRequest,
     OperatorTransportService,
 )
 
@@ -29,38 +29,66 @@ CAPTURED_AT = datetime(
     2026,
     8,
     31,
-    9,
-    20,
+    11,
+    0,
 )
 
 
-SCHEDULER_VIEW = OperatorSchedulerView(
-    trading_date=date(
-        2026,
-        8,
-        31,
-    ),
-    state="MONITORING",
-    updated_at=datetime(
-        2026,
-        8,
-        31,
-        9,
-        20,
-    ),
-    started_at=datetime(
-        2026,
-        8,
-        31,
-        9,
-        0,
-    ),
-    closed_at=None,
-    failure_message=None,
-    is_terminal=False,
-    can_accept_new_entries=True,
-    can_manage_positions=True,
-    captured_at=CAPTURED_AT,
+POSITION_VIEW = (
+    OperatorPositionView(
+        position_id="POS-1",
+        risk_id="RISK-1",
+        symbol="NIFTY-CE",
+        security_id="101",
+        lot_size=65,
+        entry_price=100.0,
+        original_quantity=65,
+        open_quantity=65,
+        closed_quantity=0,
+        state="OPEN",
+        realized_pnl=0.0,
+        pnl_available=True,
+        unrealized_pnl=650.0,
+        total_pnl=650.0,
+        unrealized_points=10.0,
+        latest_ltp=110.0,
+        latest_mark_at=datetime(
+            2026,
+            8,
+            31,
+            10,
+            59,
+        ),
+        created_at=datetime(
+            2026,
+            8,
+            31,
+            9,
+            35,
+        ),
+        updated_at=datetime(
+            2026,
+            8,
+            31,
+            10,
+            59,
+        ),
+    )
+)
+
+
+POSITIONS_VIEW = (
+    OperatorPositionsView(
+        positions=(
+            POSITION_VIEW,
+        ),
+        open_count=1,
+        open_quantity=65,
+        realized_pnl=0.0,
+        unrealized_pnl=650.0,
+        total_pnl=650.0,
+        captured_at=CAPTURED_AT,
+    )
 )
 
 
@@ -75,18 +103,7 @@ class _UnusedOrders:
         )
 
 
-class _UnusedPositions:
-    def capture(
-        self,
-        *,
-        captured_at,
-    ):
-        raise AssertionError(
-            "positions must not be called"
-        )
-
-
-class FakeScheduler:
+class FakePositions:
     def __init__(
         self,
     ) -> None:
@@ -98,12 +115,12 @@ class FakeScheduler:
         self,
         *,
         captured_at: datetime,
-    ) -> OperatorSchedulerView:
+    ) -> OperatorPositionsView:
         self.calls.append(
             captured_at
         )
 
-        return SCHEDULER_VIEW
+        return POSITIONS_VIEW
 
 
 class UnusedStatus:
@@ -133,6 +150,15 @@ class UnusedNotifications:
         raise AssertionError
 
 
+class UnusedScheduler:
+    def capture(
+        self,
+        *,
+        captured_at: datetime,
+    ) -> Any:
+        raise AssertionError
+
+
 class UnusedReporting:
     def current_runtime_json(
         self,
@@ -145,7 +171,7 @@ class UnusedReporting:
     def daily_trade_json(
         self,
         *,
-        trading_date: date,
+        trading_date,
         generated_at: datetime,
         indent: int | None = None,
     ) -> str:
@@ -171,72 +197,72 @@ class UnusedControl:
 
 
 def make_transport(
-    scheduler: FakeScheduler,
+    positions: FakePositions,
 ) -> OperatorTransportService:
     return OperatorTransportService(
         status=UnusedStatus(),
         strategy=UnusedStrategy(),
         notifications=UnusedNotifications(),
-        scheduler=scheduler,
-        positions=_UnusedPositions(),
+        scheduler=UnusedScheduler(),
+        positions=positions,
         orders=_UnusedOrders(),
         reporting=UnusedReporting(),
         control=UnusedControl(),
     )
 
 
-def test_scheduler_transport_preserves_exact_owner() -> None:
-    scheduler = FakeScheduler()
+def test_position_transport_preserves_exact_owner() -> None:
+    positions = FakePositions()
 
     transport = make_transport(
-        scheduler
+        positions
     )
 
     assert (
-        transport.scheduler
-        is scheduler
+        transport.positions
+        is positions
     )
 
 
-def test_scheduler_transport_delegates_once() -> None:
-    scheduler = FakeScheduler()
+def test_position_transport_delegates_once() -> None:
+    positions = FakePositions()
 
     transport = make_transport(
-        scheduler
+        positions
     )
 
-    result = transport.get_scheduler(
-        OperatorSchedulerRequest(
+    result = transport.get_positions(
+        OperatorPositionsRequest(
             captured_at=CAPTURED_AT,
         )
     )
 
-    assert result is SCHEDULER_VIEW
+    assert result is POSITIONS_VIEW
 
-    assert scheduler.calls == [
+    assert positions.calls == [
         CAPTURED_AT,
     ]
 
 
-def test_scheduler_transport_rejects_wrong_request() -> None:
+def test_position_transport_rejects_wrong_request() -> None:
     transport = make_transport(
-        FakeScheduler()
+        FakePositions()
     )
 
     with pytest.raises(
         TypeError,
-        match="OperatorSchedulerRequest",
+        match="OperatorPositionsRequest",
     ):
-        transport.get_scheduler(
+        transport.get_positions(
             object(),  # type: ignore[arg-type]
         )
 
 
-def test_scheduler_http_uses_public_asgi_contract() -> None:
-    scheduler = FakeScheduler()
+def test_position_http_uses_public_asgi_contract() -> None:
+    positions = FakePositions()
 
     transport = make_transport(
-        scheduler
+        positions
     )
 
     clock_calls = 0
@@ -253,7 +279,7 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
         clock=clock,
     )
 
-    async def request_scheduler(
+    async def request_positions(
     ) -> list[Message]:
         messages: list[
             Message
@@ -307,11 +333,11 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
                 "root_path": "",
                 "path": (
                     "/api/v1/operator/"
-                    "scheduler"
+                    "positions"
                 ),
                 "raw_path": (
                     b"/api/v1/operator/"
-                    b"scheduler"
+                    b"positions"
                 ),
                 "query_string": b"",
                 "headers": [
@@ -333,7 +359,7 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
         return messages
 
     messages = asyncio.run(
-        request_scheduler()
+        request_positions()
     )
 
     start = next(
@@ -372,31 +398,57 @@ def test_scheduler_http_uses_public_asgi_contract() -> None:
 
     assert clock_calls == 1
 
-    assert scheduler.calls == [
+    assert positions.calls == [
         CAPTURED_AT,
     ]
 
     assert (
-        payload["state"]
-        == "MONITORING"
+        payload["open_count"]
+        == 1
     )
 
     assert (
-        payload["trading_date"]
-        == "2026-08-31"
+        payload["open_quantity"]
+        == 65
     )
 
     assert (
-        payload["can_accept_new_entries"]
+        payload["unrealized_pnl"]
+        == 650.0
+    )
+
+    assert (
+        payload["total_pnl"]
+        == 650.0
+    )
+
+    assert (
+        len(
+            payload["positions"]
+        )
+        == 1
+    )
+
+    position = (
+        payload["positions"][0]
+    )
+
+    assert (
+        position["position_id"]
+        == "POS-1"
+    )
+
+    assert (
+        position["latest_ltp"]
+        == 110.0
+    )
+
+    assert (
+        position["unrealized_points"]
+        == 10.0
+    )
+
+    assert (
+        position["pnl_available"]
         is True
-    )
-
-    assert (
-        payload["can_manage_positions"]
-        is True
-    )
-
-    assert (
-        payload["is_terminal"]
-        is False
     )

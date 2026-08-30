@@ -48,6 +48,9 @@ from src.runtime.runtime_types import (
 from src.services.scheduler import (
     TradingDayScheduler,
 )
+from src.risk.position_pnl_tracker import (
+    PositionPnLTracker,
+)
 
 def _operator_exit_runtime(
     trading_runtime: PhoenixTradingRuntimeContainer,
@@ -225,6 +228,14 @@ def make_graph():
         registry,
     )
 
+    pnl_tracker = PositionPnLTracker()
+
+    object.__setattr__(
+        trading_runtime,
+        "pnl_tracker",
+        pnl_tracker,
+    )
+
     dhan = SimpleNamespace(
         account_id=SimpleNamespace(
             value="DHAN-001",
@@ -332,6 +343,36 @@ def test_operator_api_reuses_exact_m07_m08_m12_owners():
         assert (
             api.operator_transport.scheduler
             is api.operator_scheduler
+        )
+
+        assert (
+            api.operator_positions.registry
+            is trading_runtime.position_registry
+        )
+
+        assert (
+            api.operator_positions.pnl_tracker
+            is trading_runtime.pnl_tracker
+        )
+
+        assert (
+            api.operator_transport.positions
+            is api.operator_positions
+        )
+
+        assert (
+            api.operator_orders.runtime
+            is runtime_startup.orchestrator
+        )
+
+        assert (
+            api.operator_orders.order_repository
+            is trading_runtime.persistence.order_repository
+        )
+
+        assert (
+            api.operator_transport.orders
+            is api.operator_orders
         )
 
         assert api.runtime_startup is runtime_startup

@@ -58,11 +58,28 @@ from src.api.operator_transport import (
     OperatorNotificationTransportPort,
     OperatorSchedulerRequest,
     OperatorSchedulerTransportPort,
+    OperatorPositionsRequest,
+    OperatorPositionsTransportPort,
+    OperatorOrdersRequest,
+    OperatorOrdersTransportPort,
 )
 from src.api.operator_scheduler import (
     OperatorSchedulerService,
     OperatorSchedulerSnapshotReader,
     OperatorSchedulerView,
+)
+from src.api.operator_positions import (
+    OperatorPositionPnLReader,
+    OperatorPositionRegistryReader,
+    OperatorPositionService,
+    OperatorPositionView,
+    OperatorPositionsView,
+)
+from src.api.operator_orders import (
+    OperatorOrderRepositoryReader,
+    OperatorOrderService,
+    OperatorOrderView,
+    OperatorOrdersView,
 )
 from src.api.operator_status import (
     OperatorAccountCapturePort,
@@ -150,4 +167,17 @@ __all__ = [
     "OperatorSchedulerView",
     "OperatorSchedulerRequest",
     "OperatorSchedulerTransportPort",
+    "OperatorPositionPnLReader",
+    "OperatorPositionRegistryReader",
+    "OperatorPositionService",
+    "OperatorPositionView",
+    "OperatorPositionsView",
+    "OperatorPositionsRequest",
+    "OperatorPositionsTransportPort",
+    "OperatorOrderRepositoryReader",
+    "OperatorOrderService",
+    "OperatorOrderView",
+    "OperatorOrdersView",
+    "OperatorOrdersRequest",
+    "OperatorOrdersTransportPort",
 ]
