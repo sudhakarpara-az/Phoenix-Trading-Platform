@@ -13,6 +13,7 @@ from typing import Any, cast
 from src.app.bootstrap import (
     compose_observability_foundation,
 )
+from src.app.startup import StartupManager
 from src.app.container import (
     PhoenixDhanContainer,
     PhoenixPersistenceContainer,
@@ -261,5 +262,62 @@ def test_observability_composition_omits_unconfigured_notification() -> None:
         assert runtime_startup.orchestrator.state is RuntimeState.CREATED
 
     finally:
+        persistence.sessions.stop()
+        persistence.database.dispose()
+
+def test_startup_evaluates_retained_health_for_m14_diagnostics() -> None:
+    persistence, dhan, runtime_startup = _build_owners()
+
+    try:
+        observability = build_observability_foundation(
+            persistence=persistence,
+            dhan=dhan,
+            runtime_startup=runtime_startup,
+        )
+
+        result = StartupManager().start_runtime(
+            runtime_startup=runtime_startup,
+            started_at=CREATED_AT,
+            recovery_checked_at=CREATED_AT,
+            running_at=CREATED_AT,
+        )
+
+        assert result.runtime.state is RuntimeState.RUNNING
+
+        runtime_health = runtime_startup.health_supervisor
+        assert runtime_health is not None
+        retained = runtime_health.latest_snapshot
+        assert retained is not None
+        assert retained.status.value == "HEALTHY"
+
+        snapshot = observability.service.capture(
+            captured_at=CREATED_AT,
+        )
+
+        assert snapshot.runtime_health is not None
+        assert snapshot.runtime_health.status == "HEALTHY"
+
+        health_total = {
+            metric.name: metric.value
+            for metric in snapshot.metrics
+        }[
+            "phoenix.runtime.health.components.total"
+        ]
+        assert health_total == 2.0
+
+        assert any(
+            finding.code == "M14_ACCOUNT_HEALTH_UNAVAILABLE"
+            for finding in snapshot.diagnostics
+        )
+
+    finally:
+        if (
+            runtime_startup.orchestrator.state
+            is RuntimeState.RUNNING
+        ):
+            runtime_startup.orchestrator.stop(
+                stopped_at=CREATED_AT,
+            )
+
         persistence.sessions.stop()
         persistence.database.dispose()

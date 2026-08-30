@@ -41,6 +41,7 @@ from src.runtime.runtime_orchestrator import (
     TradingRuntimeOrchestrator,
 )
 from src.runtime.runtime_types import (
+    RuntimeFailureCode,
     RuntimeSnapshot,
     RuntimeState,
 )
@@ -3197,6 +3198,22 @@ class StartupRecoveryPort(Protocol):
         ...
 
 
+class RuntimeHealthEvaluationPort(Protocol):
+    """
+    Narrow M08 lifecycle boundary for health evaluation.
+
+    M10 owns the startup call order; M08 retains health-check
+    semantics and fail-closed runtime behavior.
+    """
+
+    def evaluate(
+        self,
+        *,
+        checked_at: datetime,
+    ) -> object:
+        ...
+
+
 class TradingDayStartupError(RuntimeError):
     """
     Raised when M10 startup composition is internally
@@ -3281,6 +3298,7 @@ class TradingDayStartupCoordinator:
         started_at: datetime,
         recovery_checked_at: datetime | None = None,
         running_at: datetime | None = None,
+        health_supervisor: RuntimeHealthEvaluationPort | None = None,
     ) -> TradingDayStartupResult:
         """
         Start one trading day without bypassing M08 recovery.
@@ -3446,6 +3464,53 @@ class TradingDayStartupCoordinator:
                 recovery_result=recovery_result,
             )
 
+        if health_supervisor is not None:
+            try:
+                health_supervisor.evaluate(
+                    checked_at=checked_at
+                )
+
+            except Exception as exc:
+                if orchestrator.state not in {
+                    RuntimeState.FAILED,
+                    RuntimeState.STOPPED,
+                }:
+                    orchestrator.fail(
+                        code=RuntimeFailureCode.HEALTH_CHECK_FAILED,
+                        message=(
+                            "runtime health evaluation failed: "
+                            f"{exc}"
+                        ),
+                        failed_at=checked_at,
+                        component="runtime-health",
+                        recoverable=False,
+                    )
+
+                trading_day = self._scheduler.fail(
+                    message="runtime health evaluation failed",
+                    failed_at=checked_at,
+                )
+
+                return TradingDayStartupResult(
+                    trading_day=trading_day,
+                    runtime=orchestrator.snapshot,
+                    recovery_plan=recovery_plan,
+                    recovery_result=recovery_result,
+                )
+
+            if orchestrator.state is not RuntimeState.READY:
+                trading_day = self._scheduler.fail(
+                    message="runtime health evaluation failed",
+                    failed_at=checked_at,
+                )
+
+                return TradingDayStartupResult(
+                    trading_day=trading_day,
+                    runtime=orchestrator.snapshot,
+                    recovery_plan=recovery_plan,
+                    recovery_result=recovery_result,
+                )
+
         runtime = orchestrator.run(
             running_at=run_at
         )
@@ -3545,6 +3610,7 @@ __all__ = [
     "TradingDayReferenceCoordinator",
     "TradingDayScheduler",
     "TradingDaySnapshot",
+    "RuntimeHealthEvaluationPort",
     "TradingDayStartupCoordinator",
     "TradingDayStartupError",
     "TradingDayStartupResult",

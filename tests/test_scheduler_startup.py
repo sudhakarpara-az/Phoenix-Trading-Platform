@@ -195,6 +195,42 @@ class FakeRecoveryService:
         )
 
 
+class FakeHealthSupervisor:
+    def __init__(
+        self,
+        *,
+        orchestrator: TradingRuntimeOrchestrator,
+        fail: bool = False,
+    ) -> None:
+        self._orchestrator = orchestrator
+        self._fail = fail
+        self.calls: list[
+            tuple[datetime, RuntimeState]
+        ] = []
+
+    def evaluate(
+        self,
+        *,
+        checked_at: datetime,
+    ) -> object:
+        self.calls.append(
+            (
+                checked_at,
+                self._orchestrator.state,
+            )
+        )
+
+        if self._fail:
+            self._orchestrator.fail(
+                code=RuntimeFailureCode.HEALTH_CHECK_FAILED,
+                message="runtime health failed",
+                failed_at=checked_at,
+                component="runtime-health",
+            )
+
+        return object()
+
+
 def test_coordinator_builds_plan_for_scheduler_date() -> None:
     scheduler = make_scheduler()
 
@@ -213,6 +249,128 @@ def test_coordinator_builds_plan_for_scheduler_date() -> None:
     assert recovery.build_dates == [
         TRADING_DATE,
     ]
+
+
+def test_health_evaluation_runs_after_ready_before_running() -> None:
+    scheduler = make_scheduler()
+
+    recovery = FakeRecoveryService(
+        plan=clean_plan()
+    )
+
+    coordinator = TradingDayStartupCoordinator(
+        scheduler=scheduler,
+        recovery_service=recovery,
+    )
+
+    runtime = make_runtime(
+        recovery_required=False
+    )
+
+    health = FakeHealthSupervisor(
+        orchestrator=runtime
+    )
+
+    result = coordinator.start(
+        orchestrator=runtime,
+        recovery_plan=clean_plan(),
+        started_at=STARTED_AT,
+        recovery_checked_at=RECOVERY_AT,
+        running_at=RUNNING_AT,
+        health_supervisor=health,
+    )
+
+    assert health.calls == [
+        (
+            RECOVERY_AT,
+            RuntimeState.READY,
+        )
+    ]
+
+    assert result.runtime.state is RuntimeState.RUNNING
+
+
+def test_health_evaluation_runs_after_recovery_completion() -> None:
+    plan = recovery_plan()
+
+    scheduler = make_scheduler()
+
+    recovery = FakeRecoveryService(
+        plan=plan
+    )
+
+    coordinator = TradingDayStartupCoordinator(
+        scheduler=scheduler,
+        recovery_service=recovery,
+    )
+
+    runtime = make_runtime(
+        recovery_required=True
+    )
+
+    health = FakeHealthSupervisor(
+        orchestrator=runtime
+    )
+
+    result = coordinator.start(
+        orchestrator=runtime,
+        recovery_plan=plan,
+        started_at=STARTED_AT,
+        recovery_checked_at=RECOVERY_AT,
+        running_at=RUNNING_AT,
+        health_supervisor=health,
+    )
+
+    assert health.calls == [
+        (
+            RECOVERY_AT,
+            RuntimeState.READY,
+        )
+    ]
+
+    assert result.runtime.recovered is True
+    assert result.runtime.state is RuntimeState.RUNNING
+
+
+def test_critical_health_evaluation_blocks_running() -> None:
+    scheduler = make_scheduler()
+
+    recovery = FakeRecoveryService(
+        plan=clean_plan()
+    )
+
+    coordinator = TradingDayStartupCoordinator(
+        scheduler=scheduler,
+        recovery_service=recovery,
+    )
+
+    runtime = make_runtime(
+        recovery_required=False
+    )
+
+    health = FakeHealthSupervisor(
+        orchestrator=runtime,
+        fail=True,
+    )
+
+    result = coordinator.start(
+        orchestrator=runtime,
+        recovery_plan=clean_plan(),
+        started_at=STARTED_AT,
+        recovery_checked_at=RECOVERY_AT,
+        running_at=RUNNING_AT,
+        health_supervisor=health,
+    )
+
+    assert health.calls == [
+        (
+            RECOVERY_AT,
+            RuntimeState.READY,
+        )
+    ]
+
+    assert result.runtime.state is RuntimeState.FAILED
+    assert result.trading_day.state is TradingDayState.FAILED
 
 
 def test_clean_start_reaches_running_runtime() -> None:

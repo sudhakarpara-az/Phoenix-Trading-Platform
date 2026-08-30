@@ -163,24 +163,58 @@ class StartupManager:
                 "restorer is bound"
             )
 
-        result = (
-            runtime_startup
-            .startup_coordinator
-            .start(
-                orchestrator=(
-                    runtime_startup
-                    .orchestrator
-                ),
-                recovery_plan=(
-                    recovery_plan
-                ),
-                started_at=started_at,
-                recovery_checked_at=(
-                    recovery_checked_at
-                ),
-                running_at=running_at,
-            )
+        health_supervisor = getattr(
+            runtime_startup,
+            "health_supervisor",
+            None,
         )
+
+        if health_supervisor is None:
+            result = (
+                runtime_startup
+                .startup_coordinator
+                .start(
+                    orchestrator=(
+                        runtime_startup
+                        .orchestrator
+                    ),
+                    recovery_plan=(
+                        recovery_plan
+                    ),
+                    started_at=started_at,
+                    recovery_checked_at=(
+                        recovery_checked_at
+                    ),
+                    running_at=(
+                        running_at
+                    ),
+                )
+            )
+
+        else:
+            result = (
+                runtime_startup
+                .startup_coordinator
+                .start(
+                    orchestrator=(
+                        runtime_startup
+                        .orchestrator
+                    ),
+                    recovery_plan=(
+                        recovery_plan
+                    ),
+                    started_at=started_at,
+                    recovery_checked_at=(
+                        recovery_checked_at
+                    ),
+                    running_at=(
+                        running_at
+                    ),
+                    health_supervisor=(
+                        health_supervisor
+                    ),
+                )
+            )
 
         runtime_state = (
             result.runtime.state

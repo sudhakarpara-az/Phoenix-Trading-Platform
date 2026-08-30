@@ -164,6 +164,7 @@ def make_runtime_startup(
         FakeStartupCoordinator,
     orchestrator: Any,
     persistence: Any = None,
+    health_supervisor: Any = None,
 ) -> Any:
     return cast(
         Any,
@@ -186,6 +187,9 @@ def make_runtime_startup(
             ),
             orchestrator=(
                 orchestrator
+            ),
+            health_supervisor=(
+                health_supervisor
             ),
         ),
     )
@@ -255,6 +259,37 @@ def test_runtime_start_delegates_to_exact_startup_coordinator():
         == NOW
     )
 
+
+
+def test_runtime_start_passes_exact_retained_health_supervisor() -> None:
+    coordinator = (
+        FakeStartupCoordinator()
+    )
+
+    orchestrator = object()
+    health_supervisor = object()
+
+    runtime_startup = (
+        make_runtime_startup(
+            recovery_required=False,
+            state_restorer=object(),
+            coordinator=coordinator,
+            orchestrator=orchestrator,
+            health_supervisor=health_supervisor,
+        )
+    )
+
+    StartupManager().start_runtime(
+        runtime_startup=runtime_startup,
+        started_at=NOW,
+    )
+
+    assert (
+        coordinator.calls[0][
+            "health_supervisor"
+        ]
+        is health_supervisor
+    )
 
 def test_recovery_required_runtime_blocks_unbound_restorer():
     binding = (
