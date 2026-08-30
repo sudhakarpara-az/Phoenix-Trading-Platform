@@ -16,6 +16,17 @@ from src.api.access_control import (
     UserId,
     UserRole,
 )
+from src.api.authentication import (
+    AuthenticationError,
+    AuthenticationIdentity,
+    AuthenticationIdentityReader,
+    AuthenticationService,
+    LoginRequest,
+    PasswordCredential,
+    PasswordCredentialReader,
+    PasswordHasher,
+    Pbkdf2PasswordHasher,
+)
 from src.api.api_types import (
     OperatorPositionSummary,
     OperatorRuntimeView,
@@ -123,6 +134,15 @@ __all__ = [
     "AccessDeniedReason",
     "AccessPermission",
     "AuthenticatedPrincipal",
+    "AuthenticationError",
+    "AuthenticationIdentity",
+    "AuthenticationIdentityReader",
+    "AuthenticationService",
+    "LoginRequest",
+    "PasswordCredential",
+    "PasswordCredentialReader",
+    "PasswordHasher",
+    "Pbkdf2PasswordHasher",
     "BrokerAccountReader",
     "DailyTradeReportReader",
     "LatestAccountReader",
