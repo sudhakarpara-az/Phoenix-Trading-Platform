@@ -2805,4 +2805,3 @@ def build_observability_foundation(
         ),
         service=service,
     )
-
