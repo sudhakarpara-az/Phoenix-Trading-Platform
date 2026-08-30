@@ -10,6 +10,12 @@ broker logic, scheduler policy, or trading decisions.
 
 from __future__ import annotations
 
+from src.app.trading_control import (
+    TradingControlCommandService,
+    TradingControlService,
+)
+from src.database.repositories.sqlalchemy_repositories import SQLAlchemyTradingControlRepository
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import (
@@ -211,6 +217,7 @@ class PhoenixPersistenceContainer:
     broker_connectivity_repository: SQLAlchemyBrokerConnectivitySnapshotRepository
     account_health_repository: SQLAlchemyAccountHealthSnapshotRepository
     account_eligibility_repository: SQLAlchemyAccountEligibilitySnapshotRepository
+    trading_control_repository: SQLAlchemyTradingControlRepository
 
 
 def build_persistence_foundation(
@@ -327,6 +334,11 @@ def build_persistence_foundation(
             ),
             account_eligibility_repository=(
                 SQLAlchemyAccountEligibilitySnapshotRepository(
+                    sessions=session_manager
+                )
+            ),
+            trading_control_repository=(
+                SQLAlchemyTradingControlRepository(
                     sessions=session_manager
                 )
             ),
@@ -492,6 +504,7 @@ class PhoenixTradingRuntimeContainer:
     position_initializer: FilledPositionRiskInitializer
     exposure_policy: ExposureRiskPolicy
     daily_risk_manager: DailyRiskManager
+    trading_control: TradingControlService
     pnl_tracker: PositionPnLTracker
 
     filled_position_builder: FilledPositionBuilder
@@ -689,6 +702,33 @@ def build_trading_runtime_foundation(
         )
     )
 
+    trading_control = (
+        TradingControlService(
+            broker=(
+                dhan
+                .account_adapter
+                .broker
+                .value
+            ),
+            account_id=(
+                dhan
+                .account_id
+                .value
+            ),
+            repository=(
+                persistence
+                .trading_control_repository
+            ),
+            manual_entry_lock=(
+                daily_risk_manager
+            ),
+        )
+    )
+
+    # Durable operator STOP must be restored before the
+    # trading-runtime object becomes available to callers.
+    trading_control.restore()
+
     pnl_tracker = (
         PositionPnLTracker()
     )
@@ -881,6 +921,7 @@ def build_trading_runtime_foundation(
         daily_risk_manager=(
             daily_risk_manager
         ),
+        trading_control=trading_control,
         pnl_tracker=pnl_tracker,
         filled_position_builder=(
             filled_position_builder
@@ -928,6 +969,9 @@ class PhoenixExitRuntimeContainer:
     force_exit_runtime: TradingDayForceExitRuntimeCoordinator
 
     readiness_provider: TradingDayCloseReadinessProvider
+
+    trading_control_commands: TradingControlCommandService
+
     end_of_day_coordinator: TradingDayEndOfDayCoordinator
 
 
@@ -1176,6 +1220,33 @@ def build_exit_runtime_foundation(
         runtime_id=runtime_id,
     )
 
+    # --------------------------------------------------------
+    # Complete M10 strong-stop command orchestration.
+    #
+    # This object owns no broker, persistence, registry or order
+    # state. It only coordinates the exact already-built owners.
+    # Construction performs no STOP/BUY/SELL action.
+    # --------------------------------------------------------
+
+    trading_control_commands = (
+        TradingControlCommandService(
+            trading_control=(
+                trading_runtime
+                .trading_control
+            ),
+            entry_runtime=(
+                trading_runtime
+                .entry_runtime
+            ),
+            liquidation_runtime=(
+                force_exit_runtime
+            ),
+            readiness=(
+                readiness_provider
+            ),
+        )
+    )
+
     return PhoenixExitRuntimeContainer(
         persistence=persistence,
         dhan=dhan,
@@ -1217,6 +1288,9 @@ def build_exit_runtime_foundation(
         ),
         readiness_provider=(
             readiness_provider
+        ),
+        trading_control_commands=(
+            trading_control_commands
         ),
         end_of_day_coordinator=(
             end_of_day_coordinator
@@ -2111,6 +2185,387 @@ def build_reporting_end_of_day(
 
 
 
+
+# ============================================================
+# M13 ? API / Dashboard / Operator Console
+# ============================================================
+
+from src.api.operator_control import (
+    OperatorControlService,
+)
+from src.api.operator_account import (
+    OperatorAccountService,
+)
+from src.api.operator_notifications import (
+    OperatorNotificationService,
+)
+from src.api.operator_scheduler import (
+    OperatorSchedulerService,
+)
+from src.api.operator_positions import (
+    OperatorPositionService,
+)
+from src.api.operator_orders import (
+    OperatorOrderService,
+)
+from src.api.operator_reporting import (
+    OperatorReportingService,
+)
+from src.api.operator_http import (
+    OperatorHttpApplication,
+    OperatorHttpClock,
+    build_operator_http_app,
+)
+from src.api.operator_transport import (
+    OperatorTransportService,
+)
+from src.api.operator_strategy import (
+    OperatorStrategyService,
+)
+from src.api.operator_status import (
+    OperatorStatusService,
+)
+from src.api.operator_snapshot import (
+    OperatorSnapshotService,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class PhoenixOperatorApiContainer:
+    """
+    Shared M13 operator/API read graph.
+
+    Exact authoritative owners are retained from:
+
+        M08 runtime orchestrator
+        M07 PositionRegistry
+        M09 durable account repositories
+        M12 reporting container
+
+    M13 introduces no replacement persistence, broker,
+    execution, event-bus, registry, reporting, or account owner.
+    """
+
+    runtime_startup: PhoenixRuntimeStartupContainer
+    trading_runtime: PhoenixTradingRuntimeContainer
+    exit_runtime: PhoenixExitRuntimeContainer
+    reporting: PhoenixReportingContainer
+    notification: PhoenixNotificationContainer
+
+    operator_snapshot: OperatorSnapshotService
+    operator_reporting: OperatorReportingService
+    operator_notifications: OperatorNotificationService
+    operator_scheduler: OperatorSchedulerService
+    operator_positions: OperatorPositionService
+    operator_orders: OperatorOrderService
+    operator_account: OperatorAccountService
+    operator_control: OperatorControlService
+    operator_strategy: OperatorStrategyService
+    operator_status: OperatorStatusService
+    operator_transport: OperatorTransportService
+
+
+class PhoenixOperatorHttpContainer:
+    """
+    Passive M13 HTTP application composition.
+
+    The container retains the exact already-composed operator
+    API graph and the FastAPI application built over its exact
+    OperatorTransportService instance.
+
+    Uvicorn/server lifecycle is intentionally not owned here.
+    """
+
+    __slots__ = (
+        "operator_api",
+        "app",
+    )
+
+    def __init__(
+        self,
+        *,
+        operator_api: PhoenixOperatorApiContainer,
+        app: OperatorHttpApplication,
+    ) -> None:
+        self.operator_api = operator_api
+        self.app = app
+
+
+def build_operator_http_foundation(
+    *,
+    operator_api: PhoenixOperatorApiContainer,
+    clock: OperatorHttpClock,
+) -> PhoenixOperatorHttpContainer:
+    """
+    Build the passive M13 FastAPI application over the exact
+    already-composed OperatorTransportService.
+
+    Construction performs no HTTP server start, runtime
+    transition, broker request, persistence write, order
+    operation, or trading-control command.
+    """
+
+    app = build_operator_http_app(
+        transport=(
+            operator_api
+            .operator_transport
+        ),
+        clock=clock,
+    )
+
+    return PhoenixOperatorHttpContainer(
+        operator_api=operator_api,
+        app=app,
+    )
+
+
+def build_operator_api_foundation(
+    *,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    trading_runtime: PhoenixTradingRuntimeContainer,
+    exit_runtime: PhoenixExitRuntimeContainer,
+    reporting: PhoenixReportingContainer,
+    notification: PhoenixNotificationContainer,
+) -> PhoenixOperatorApiContainer:
+    """
+    Bind M13 to exact existing M07/M08/M09/M12 owners.
+
+    Construction performs no broker request, account refresh,
+    persistence write, runtime transition, order operation,
+    notification, or event publication.
+    """
+
+    if (
+        trading_runtime.runtime_startup
+        is not runtime_startup
+    ):
+        raise ValueError(
+            "trading_runtime must reference the exact "
+            "runtime_startup supplied to M13"
+        )
+
+    if (
+        trading_runtime.persistence
+        is not runtime_startup.persistence
+    ):
+        raise ValueError(
+            "runtime_startup and trading_runtime must "
+            "share the exact persistence container"
+        )
+
+    if (
+        exit_runtime.trading_runtime
+        is not trading_runtime
+    ):
+        raise ValueError(
+            "exit_runtime must reference the exact "
+            "trading_runtime supplied to M13"
+        )
+
+    if (
+        exit_runtime.persistence
+        is not trading_runtime.persistence
+    ):
+        raise ValueError(
+            "exit_runtime and trading_runtime must "
+            "share the exact persistence container"
+        )
+
+    if (
+        exit_runtime
+        .trading_control_commands
+        .trading_control
+        is not trading_runtime.trading_control
+    ):
+        raise ValueError(
+            "operator control command owner must "
+            "reference the exact trading runtime "
+            "trading_control"
+        )
+
+    if (
+        reporting.persistence
+        is not trading_runtime.persistence
+    ):
+        raise ValueError(
+            "reporting must reference the exact "
+            "trading runtime persistence container"
+        )
+
+    if (
+        notification.runtime_startup
+        is not runtime_startup
+    ):
+        raise ValueError(
+            "notification must reference the exact "
+            "runtime_startup supplied to M13"
+        )
+
+    operator_snapshot = OperatorSnapshotService(
+        runtime=runtime_startup.orchestrator,
+        positions=trading_runtime.position_registry,
+    )
+
+    operator_reporting = OperatorReportingService(
+        runtime=runtime_startup.orchestrator,
+        runtime_report=reporting.runtime_report,
+        daily_report=reporting.daily_report,
+        serializer=reporting.report_serializer,
+    )
+
+    persistence = trading_runtime.persistence
+
+    operator_account = OperatorAccountService(
+        broker=(
+            trading_runtime
+            .dhan
+            .account_adapter
+            .broker
+            .value
+        ),
+        account_id=(
+            trading_runtime
+            .dhan
+            .account_id
+            .value
+        ),
+        account_repository=(
+            persistence.broker_account_repository
+        ),
+        session_repository=(
+            persistence.broker_session_repository
+        ),
+        fund_repository=(
+            persistence.account_fund_repository
+        ),
+        connectivity_repository=(
+            persistence
+            .broker_connectivity_repository
+        ),
+        health_repository=(
+            persistence.account_health_repository
+        ),
+        eligibility_repository=(
+            persistence
+            .account_eligibility_repository
+        ),
+    )
+
+    operator_control = (
+        OperatorControlService(
+            commands=(
+                exit_runtime
+                .trading_control_commands
+            ),
+        )
+    )
+
+    operator_notifications = (
+        OperatorNotificationService(
+            summary_collector=(
+                notification
+                .summary_collector
+            ),
+            queued_channel=(
+                notification
+                .queued_channel
+            ),
+        )
+    )
+
+    operator_scheduler = (
+        OperatorSchedulerService(
+            scheduler=(
+                runtime_startup.scheduler
+            ),
+        )
+    )
+
+    operator_positions = (
+        OperatorPositionService(
+            registry=(
+                trading_runtime.position_registry
+            ),
+            pnl_tracker=(
+                trading_runtime.pnl_tracker
+            ),
+        )
+    )
+
+    operator_orders = (
+        OperatorOrderService(
+            runtime=(
+                runtime_startup.orchestrator
+            ),
+            order_repository=(
+                trading_runtime
+                .persistence
+                .order_repository
+            ),
+        )
+    )
+
+    operator_strategy = (
+        OperatorStrategyService(
+            signal_runtime=(
+                trading_runtime
+                .signal_runtime
+            ),
+            entry_runtime=(
+                trading_runtime
+                .entry_runtime
+            ),
+        )
+    )
+
+    operator_status = (
+        OperatorStatusService(
+            snapshot=operator_snapshot,
+            account=operator_account,
+            control=(
+                trading_runtime
+                .trading_control
+            ),
+        )
+    )
+
+    operator_transport = (
+        OperatorTransportService(
+            status=operator_status,
+            strategy=operator_strategy,
+            notifications=operator_notifications,
+            scheduler=operator_scheduler,
+            positions=operator_positions,
+            orders=operator_orders,
+            reporting=operator_reporting,
+            control=operator_control,
+        )
+    )
+
+    return PhoenixOperatorApiContainer(
+        runtime_startup=runtime_startup,
+        trading_runtime=trading_runtime,
+        exit_runtime=exit_runtime,
+        reporting=reporting,
+        notification=notification,
+        operator_snapshot=operator_snapshot,
+        operator_reporting=operator_reporting,
+        operator_notifications=operator_notifications,
+        operator_account=operator_account,
+        operator_control=operator_control,
+        operator_scheduler=operator_scheduler,
+        operator_positions=operator_positions,
+        operator_orders=operator_orders,
+        operator_strategy=operator_strategy,
+        operator_status=operator_status,
+        operator_transport=operator_transport,
+    )
+
+
+
 __all__ = [
     "PhoenixDhanContainer",
     "PhoenixExitRuntimeContainer",
@@ -2132,4 +2587,8 @@ __all__ = [
     "PhoenixReportingContainer",
     "build_reporting_foundation",
     "build_reporting_end_of_day",
+    "PhoenixOperatorApiContainer",
+    "build_operator_api_foundation",
+    "PhoenixOperatorHttpContainer",
+    "build_operator_http_foundation",
 ]

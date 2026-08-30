@@ -1055,3 +1055,76 @@ def test_m07_never_calls_broker_directly() -> None:
     )
 
     assert provider.submit_count == 1
+
+
+def test_partial_manual_exit_uses_remaining_quantity() -> None:
+    position = make_managed_position(
+        quantity=65,
+        open_quantity=35,
+        closed_quantity=30,
+        state=(
+            ManagedPositionState
+            .PARTIALLY_EXITED
+        ),
+    )
+
+    (
+        _,
+        provider,
+        integration,
+    ) = make_components(
+        position
+    )
+
+    result = integration.execute_decision(
+        decision=make_decision(
+            trigger=RiskTriggerType.MANUAL,
+            quantity=35,
+        ),
+        execution_mode=ExecutionMode.LIVE,
+        requested_at=NOW,
+    )
+
+    assert (
+        result.status
+        is M07ExitIntegrationStatus.SUBMITTED
+    )
+
+    assert result.exit_plan is not None
+
+    assert (
+        result.exit_plan.reason
+        is ExitReason.MANUAL
+    )
+
+    assert (
+        result.exit_plan.order_type
+        is ExitOrderType.MARKET
+    )
+
+    assert (
+        result.exit_plan.quantity
+        == 35
+    )
+
+    assert (
+        result.position.state
+        is ManagedPositionState.EXIT_PENDING
+    )
+
+    assert provider.last_intent is not None
+
+    assert (
+        provider.last_intent.reason
+        is ExitReason.MANUAL
+    )
+
+    assert (
+        provider.last_intent.quantity
+        == 35
+    )
+
+    assert (
+        provider.last_intent.order_type
+        is ExitOrderType.MARKET
+    )

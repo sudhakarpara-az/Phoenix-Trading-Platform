@@ -1,0 +1,183 @@
+"""
+Phoenix M13 ? API / Dashboard / Operator Console.
+
+The package currently exposes transport-neutral operator
+reads and control projection. HTTP transport is layered later.
+"""
+
+from src.api.api_types import (
+    OperatorPositionSummary,
+    OperatorRuntimeView,
+    OperatorSnapshot,
+)
+from src.api.operator_control import (
+    OperatorControlCommandPort,
+    OperatorControlService,
+    OperatorControlStateView,
+    OperatorExitAndStopView,
+)
+from src.api.operator_account import (
+    BrokerAccountReader,
+    LatestAccountReader,
+    OperatorAccountProfileView,
+    OperatorAccountService,
+    OperatorAccountView,
+    OperatorConnectivityView,
+    OperatorEligibilityView,
+    OperatorFundsView,
+    OperatorHealthView,
+    OperatorSessionView,
+)
+from src.api.operator_notifications import (
+    OperatorNotificationQueueReader,
+    OperatorNotificationQueueView,
+    OperatorNotificationService,
+    OperatorNotificationSummaryReader,
+    OperatorNotificationSummaryView,
+    OperatorNotificationView,
+)
+from src.api.operator_reporting import (
+    DailyTradeReportReader,
+    OperatorReportSerializer,
+    OperatorReportingService,
+    RuntimeTradeReportReader,
+)
+from src.api.operator_transport import (
+    OperatorControlTransportPort,
+    OperatorDailyReportRequest,
+    OperatorExitAndStopRequest,
+    OperatorReportingTransportPort,
+    OperatorResumeRequest,
+    OperatorRuntimeReportRequest,
+    OperatorStatusRequest,
+    OperatorStatusTransportPort,
+    OperatorTransportService,
+    OperatorStrategyRequest,
+    OperatorStrategyTransportPort,
+    OperatorNotificationRequest,
+    OperatorNotificationTransportPort,
+    OperatorSchedulerRequest,
+    OperatorSchedulerTransportPort,
+    OperatorPositionsRequest,
+    OperatorPositionsTransportPort,
+    OperatorOrdersRequest,
+    OperatorOrdersTransportPort,
+)
+from src.api.operator_scheduler import (
+    OperatorSchedulerService,
+    OperatorSchedulerSnapshotReader,
+    OperatorSchedulerView,
+)
+from src.api.operator_positions import (
+    OperatorPositionPnLReader,
+    OperatorPositionRegistryReader,
+    OperatorPositionService,
+    OperatorPositionView,
+    OperatorPositionsView,
+)
+from src.api.operator_orders import (
+    OperatorOrderRepositoryReader,
+    OperatorOrderService,
+    OperatorOrderView,
+    OperatorOrdersView,
+)
+from src.api.operator_status import (
+    OperatorAccountCapturePort,
+    OperatorControlSnapshotReader,
+    OperatorSnapshotCapturePort,
+    OperatorStatusService,
+    OperatorStatusView,
+)
+from src.api.operator_snapshot import (
+    ManagedPositionView,
+    OperatorSnapshotService,
+    PositionSnapshotReader,
+    RuntimeSnapshotReader,
+)
+
+from src.api.operator_strategy import (
+    OperatorKSLevelsView,
+    OperatorLevelPreparationReader,
+    OperatorSelectedOptionReader,
+    OperatorSelectedOptionView,
+    OperatorStrategyService,
+    OperatorStrategyView,
+)
+
+
+
+__all__ = [
+    "BrokerAccountReader",
+    "DailyTradeReportReader",
+    "LatestAccountReader",
+    "ManagedPositionView",
+    "OperatorAccountProfileView",
+    "OperatorExitAndStopView",
+    "OperatorControlStateView",
+    "OperatorControlService",
+    "OperatorControlCommandPort",
+    "OperatorAccountService",
+    "OperatorAccountView",
+    "OperatorConnectivityView",
+    "OperatorEligibilityView",
+    "OperatorFundsView",
+    "OperatorHealthView",
+    "OperatorPositionSummary",
+    "OperatorReportSerializer",
+    "OperatorReportingService",
+    "OperatorRuntimeView",
+    "OperatorSessionView",
+    "OperatorSnapshot",
+    "OperatorSnapshotService",
+    "OperatorStatusView",
+    "OperatorStatusService",
+    "OperatorSnapshotCapturePort",
+    "OperatorControlSnapshotReader",
+    "OperatorAccountCapturePort",
+    "OperatorControlTransportPort",
+    "OperatorDailyReportRequest",
+    "OperatorExitAndStopRequest",
+    "OperatorReportingTransportPort",
+    "OperatorResumeRequest",
+    "OperatorRuntimeReportRequest",
+    "OperatorStatusRequest",
+    "OperatorStatusTransportPort",
+    "OperatorTransportService",
+    "PositionSnapshotReader",
+    "RuntimeSnapshotReader",
+    "RuntimeTradeReportReader",
+    "OperatorKSLevelsView",
+    "OperatorLevelPreparationReader",
+    "OperatorSelectedOptionReader",
+    "OperatorSelectedOptionView",
+    "OperatorStrategyService",
+    "OperatorStrategyView",
+    "OperatorStrategyRequest",
+    "OperatorStrategyTransportPort",
+    "OperatorNotificationQueueReader",
+    "OperatorNotificationQueueView",
+    "OperatorNotificationService",
+    "OperatorNotificationSummaryReader",
+    "OperatorNotificationSummaryView",
+    "OperatorNotificationView",
+    "OperatorNotificationRequest",
+    "OperatorNotificationTransportPort",
+    "OperatorSchedulerService",
+    "OperatorSchedulerSnapshotReader",
+    "OperatorSchedulerView",
+    "OperatorSchedulerRequest",
+    "OperatorSchedulerTransportPort",
+    "OperatorPositionPnLReader",
+    "OperatorPositionRegistryReader",
+    "OperatorPositionService",
+    "OperatorPositionView",
+    "OperatorPositionsView",
+    "OperatorPositionsRequest",
+    "OperatorPositionsTransportPort",
+    "OperatorOrderRepositoryReader",
+    "OperatorOrderService",
+    "OperatorOrderView",
+    "OperatorOrdersView",
+    "OperatorOrdersRequest",
+    "OperatorOrdersTransportPort",
+]

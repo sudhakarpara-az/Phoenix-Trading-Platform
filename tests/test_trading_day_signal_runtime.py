@@ -1048,6 +1048,16 @@ class _T14EntryExecutionService:
         self.idempotency_guard = (
             _T14EntryGuard()
         )
+        self.cancel_calls = 0
+
+    def cancel_entry_order(
+        self,
+        *,
+        intent,
+        execution_result,
+    ):
+        self.cancel_calls += 1
+        return self.snapshot
 
     def refresh_entry_order_status(
         self,
@@ -1852,4 +1862,189 @@ def test_entry_runtime_public_contracts_are_exported() -> None:
         set(
             trading_day_runtime.__all__
         )
+    )
+
+
+
+def test_entry_runtime_cancel_pending_batch_uses_broker_truth() -> None:
+    stack = _make_t14_entry_stack(
+        broker_status=(
+            _EntryBrokerOrderStatus.OPEN
+        ),
+    )
+
+    signal_result = (
+        _create_t14_signal_result(
+            stack
+        )
+    )
+
+    first = (
+        stack["coordinator"]
+        .process_signal_result(
+            signal_result,
+            dry_run=False,
+            requested_at=dt(
+                10,
+                0,
+            ),
+        )
+    )
+
+    assert (
+        first.reason
+        is TradingDayEntryRuntimeReason
+        .ENTRY_PENDING
+    )
+
+    current = (
+        stack["execution_service"]
+        .snapshot
+    )
+
+    stack["execution_service"].snapshot = (
+        _EntryBrokerOrderSnapshot(
+            broker_reference=(
+                current.broker_reference
+            ),
+            status=(
+                _EntryBrokerOrderStatus
+                .CANCELLED
+            ),
+            quantity=current.quantity,
+            filled_quantity=0,
+            average_price=None,
+            updated_at=dt(
+                10,
+                0,
+                5,
+            ),
+        )
+    )
+
+    results = (
+        stack["coordinator"]
+        .cancel_pending_entries(
+            cancelled_at=dt(
+                10,
+                0,
+                6,
+            ),
+        )
+    )
+
+    assert len(results) == 1
+
+    assert (
+        results[0].reason
+        is TradingDayEntryRuntimeReason
+        .ENTRY_CANCELLED
+    )
+
+    assert (
+        stack["execution_service"]
+        .cancel_calls
+        == 1
+    )
+
+    assert (
+        stack["coordinator"]
+        .pending_count
+        == 0
+    )
+
+    assert (
+        stack["signal_stack"]
+        ["level_locks"]
+        .count()
+        == 0
+    )
+
+
+def test_entry_runtime_cancel_unknown_remains_reconciliation_required() -> None:
+    stack = _make_t14_entry_stack(
+        broker_status=(
+            _EntryBrokerOrderStatus.OPEN
+        ),
+    )
+
+    signal_result = (
+        _create_t14_signal_result(
+            stack
+        )
+    )
+
+    first = (
+        stack["coordinator"]
+        .process_signal_result(
+            signal_result,
+            dry_run=False,
+            requested_at=dt(
+                10,
+                0,
+            ),
+        )
+    )
+
+    assert (
+        first.reason
+        is TradingDayEntryRuntimeReason
+        .ENTRY_PENDING
+    )
+
+    current = (
+        stack["execution_service"]
+        .snapshot
+    )
+
+    stack["execution_service"].snapshot = (
+        _EntryBrokerOrderSnapshot(
+            broker_reference=(
+                current.broker_reference
+            ),
+            status=(
+                _EntryBrokerOrderStatus
+                .UNKNOWN
+            ),
+            quantity=current.quantity,
+            filled_quantity=0,
+            average_price=None,
+            updated_at=dt(
+                10,
+                0,
+                5,
+            ),
+        )
+    )
+
+    results = (
+        stack["coordinator"]
+        .cancel_pending_entries(
+            cancelled_at=dt(
+                10,
+                0,
+                6,
+            ),
+        )
+    )
+
+    assert len(results) == 1
+
+    assert (
+        results[0].reason
+        is TradingDayEntryRuntimeReason
+        .RECONCILIATION_REQUIRED
+    )
+
+    assert (
+        stack["coordinator"]
+        .pending_count
+        == 1
+    )
+
+    assert (
+        stack["signal_stack"]
+        ["level_locks"]
+        .count()
+        == 1
     )

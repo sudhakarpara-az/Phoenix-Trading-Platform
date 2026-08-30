@@ -167,6 +167,7 @@ class ExitPlanBuilder:
         *,
         position: FilledPosition,
         created_at: datetime,
+        quantity: int | None = None,
         order_type: ExitOrderType = (
             ExitOrderType.MARKET
         ),
@@ -182,6 +183,7 @@ class ExitPlanBuilder:
             order_type=order_type,
             created_at=created_at,
             exit_price=exit_price,
+            quantity=quantity,
         )
 
     @staticmethod
@@ -192,7 +194,24 @@ class ExitPlanBuilder:
         order_type: ExitOrderType,
         created_at: datetime,
         exit_price: float | None = None,
+        quantity: int | None = None,
     ) -> ExitPlan:
+        exit_quantity = (
+            position.quantity
+            if quantity is None
+            else quantity
+        )
+
+        if exit_quantity <= 0:
+            raise ValueError(
+                "exit quantity must be greater than zero"
+            )
+
+        if exit_quantity > position.quantity:
+            raise ValueError(
+                "exit quantity cannot exceed position quantity"
+            )
+
         if reason is ExitReason.TARGET:
             raise ValueError(
                 "target exits must use build_target_exit"
@@ -219,7 +238,7 @@ class ExitPlanBuilder:
             security_id=position.security_id,
             symbol=position.symbol,
             option_type=position.option_type,
-            quantity=position.quantity,
+            quantity=exit_quantity,
             reason=reason,
             order_type=order_type,
             mapped_target_price=None,

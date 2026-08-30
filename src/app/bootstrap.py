@@ -450,6 +450,65 @@ def compose_reporting_end_of_day(
 
 
 
+
+# ============================================================
+# M13 ? API / Dashboard / Operator Console
+# ============================================================
+
+from src.app.container import (
+    PhoenixOperatorApiContainer,
+    build_operator_api_foundation,
+    PhoenixOperatorHttpContainer,
+    build_operator_http_foundation,
+)
+
+from src.api.operator_http import (
+    OperatorHttpClock,
+)
+
+
+
+def compose_operator_api_foundation(
+    *,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    trading_runtime: PhoenixTradingRuntimeContainer,
+    exit_runtime: PhoenixExitRuntimeContainer,
+    reporting: PhoenixReportingContainer,
+    notification: PhoenixNotificationContainer,
+) -> PhoenixOperatorApiContainer:
+    """
+    Compose the passive M13 operator/API read graph from the
+    exact already-built M07/M08/M12 owners.
+    """
+
+    return build_operator_api_foundation(
+        runtime_startup=runtime_startup,
+        trading_runtime=trading_runtime,
+        exit_runtime=exit_runtime,
+        reporting=reporting,
+        notification=notification,
+    )
+
+
+def compose_operator_http_foundation(
+    *,
+    operator_api: PhoenixOperatorApiContainer,
+    clock: OperatorHttpClock,
+) -> PhoenixOperatorHttpContainer:
+    """
+    Compose the passive M13 HTTP application from the exact
+    already-composed operator API graph.
+
+    Uvicorn/server lifecycle remains outside this wrapper.
+    """
+
+    return build_operator_http_foundation(
+        operator_api=operator_api,
+        clock=clock,
+    )
+
+
+
 __all__ = [
     "compose_dhan_foundation",
     "compose_exit_runtime_foundation",
@@ -464,4 +523,6 @@ __all__ = [
     "compose_notification_end_of_day",
     "compose_reporting_foundation",
     "compose_reporting_end_of_day",
+    "compose_operator_api_foundation",
+    "compose_operator_http_foundation",
 ]
