@@ -5,6 +5,17 @@ The package currently exposes transport-neutral operator
 reads and control projection. HTTP transport is layered later.
 """
 
+from src.api.access_control import (
+    AccessDecision,
+    AccessDeniedError,
+    AccessDeniedReason,
+    AccessPermission,
+    AuthenticatedPrincipal,
+    RbacPolicy,
+    TenantId,
+    UserId,
+    UserRole,
+)
 from src.api.api_types import (
     OperatorPositionSummary,
     OperatorRuntimeView,
@@ -107,6 +118,11 @@ from src.api.operator_strategy import (
 
 
 __all__ = [
+    "AccessDecision",
+    "AccessDeniedError",
+    "AccessDeniedReason",
+    "AccessPermission",
+    "AuthenticatedPrincipal",
     "BrokerAccountReader",
     "DailyTradeReportReader",
     "LatestAccountReader",
@@ -146,6 +162,10 @@ __all__ = [
     "PositionSnapshotReader",
     "RuntimeSnapshotReader",
     "RuntimeTradeReportReader",
+    "RbacPolicy",
+    "TenantId",
+    "UserId",
+    "UserRole",
     "OperatorKSLevelsView",
     "OperatorLevelPreparationReader",
     "OperatorSelectedOptionReader",
