@@ -549,4 +549,53 @@ def test_force_exit_cannot_exceed_position_quantity() -> None:
             position=position,
             created_at=NOW,
             quantity=130,
-        )    
+        )
+
+
+def test_manual_exit_can_use_remaining_quantity() -> None:
+    builder = make_builder()
+
+    position = make_position(
+        quantity=65
+    )
+
+    plan = builder.build_manual_exit(
+        position=position,
+        quantity=35,
+        created_at=NOW,
+    )
+
+    assert plan.quantity == 35
+
+    assert (
+        plan.reason
+        is ExitReason.MANUAL
+    )
+
+    assert (
+        plan.order_type
+        is ExitOrderType.MARKET
+    )
+
+    assert plan.exit_price is None
+
+
+def test_manual_exit_rejects_quantity_above_position() -> None:
+    builder = make_builder()
+
+    position = make_position(
+        quantity=65
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "exit quantity cannot exceed "
+            "position quantity"
+        ),
+    ):
+        builder.build_manual_exit(
+            position=position,
+            quantity=66,
+            created_at=NOW,
+        )

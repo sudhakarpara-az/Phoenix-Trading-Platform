@@ -301,4 +301,6 @@ def test_bootstrap_public_exports() -> None:
         "compose_notification_end_of_day",
         "compose_reporting_foundation",
         "compose_reporting_end_of_day",
+        "compose_operator_api_foundation",
+        "compose_operator_http_foundation",
     ]

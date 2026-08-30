@@ -590,4 +590,8 @@ def test_container_public_exports() -> None:
         "PhoenixReportingContainer",
         "build_reporting_foundation",
         "build_reporting_end_of_day",
+        "PhoenixOperatorApiContainer",
+        "build_operator_api_foundation",
+        "PhoenixOperatorHttpContainer",
+        "build_operator_http_foundation",
     ]

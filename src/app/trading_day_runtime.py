@@ -799,6 +799,20 @@ class TradingDayEntryRuntimeCoordinator:
     ) -> TradingDaySignalRuntimeCoordinator:
         return self._signal_runtime
 
+
+    @property
+    def level_preparation(
+        self,
+    ) -> TradingDayLevelPreparationResult:
+        """
+        Return the exact immutable M10 level preparation.
+
+        No KS recalculation, option selection, persistence,
+        broker access, or runtime mutation occurs here.
+        """
+
+        return self._level_preparation
+
     @property
     def entry_adapter(
         self,
@@ -856,6 +870,194 @@ class TradingDayEntryRuntimeCoordinator:
             return self._pending.get(
                 normalized
             )
+
+    def cancel_pending_entry(
+        self,
+        signal_id: str,
+        *,
+        cancelled_at: datetime,
+    ) -> TradingDayEntryRuntimeResult:
+        """
+        Request cancellation of one unresolved LIVE BUY.
+
+        Cancellation never assumes the broker accepted the
+        request. M06 immediately refreshes authoritative order
+        status and the existing broker-snapshot resolver decides:
+
+            CANCELLED + zero fill
+                -> terminal cancellation
+
+            FILLED
+                -> build/manage position normally
+
+            OPEN/PENDING
+                -> remains pending
+
+            PARTIAL/UNKNOWN/etc.
+                -> reconciliation required
+        """
+
+        normalized = self._normalize_signal_id(
+            signal_id
+        )
+
+        if type(cancelled_at) is not datetime:
+            raise TypeError(
+                "cancelled_at must be a datetime"
+            )
+
+        with self._lock:
+            context = self._pending.get(
+                normalized
+            )
+
+            if context is None:
+                raise KeyError(
+                    "pending entry not found: "
+                    f"{normalized}"
+                )
+
+            if cancelled_at < context.started_at:
+                raise ValueError(
+                    "cancelled_at cannot be before "
+                    "entry start time"
+                )
+
+            execution_result = (
+                context.execution_result
+            )
+
+            if (
+                execution_result is None
+                or execution_result
+                .broker_reference is None
+            ):
+                existing = (
+                    self._results[
+                        normalized
+                    ]
+                )
+
+                unresolved = replace(
+                    existing,
+                    reason=(
+                        TradingDayEntryRuntimeReason
+                        .RECONCILIATION_REQUIRED
+                    ),
+                    message=(
+                        existing.message
+                        or "pending entry has no broker "
+                        "reference for cancellation"
+                    ),
+                )
+
+                self._results[
+                    normalized
+                ] = unresolved
+
+                return unresolved
+
+            try:
+                snapshot = (
+                    self._entry_adapter
+                    .execution_service
+                    .cancel_entry_order(
+                        intent=context.intent,
+                        execution_result=(
+                            execution_result
+                        ),
+                    )
+                )
+
+            except Exception as exc:
+                existing = (
+                    self._results[
+                        normalized
+                    ]
+                )
+
+                unresolved = replace(
+                    existing,
+                    reason=(
+                        TradingDayEntryRuntimeReason
+                        .RECONCILIATION_REQUIRED
+                    ),
+                    message=str(exc),
+                )
+
+                self._results[
+                    normalized
+                ] = unresolved
+
+                return unresolved
+
+            context = replace(
+                context,
+                latest_snapshot=snapshot,
+            )
+
+            self._pending[
+                normalized
+            ] = context
+
+            return self._resolve_broker_snapshot(
+                signal_key=normalized,
+                snapshot=snapshot,
+                resolved_at=cancelled_at,
+            )
+
+    def cancel_pending_entries(
+        self,
+        *,
+        cancelled_at: datetime,
+    ) -> tuple[
+        TradingDayEntryRuntimeResult,
+        ...,
+    ]:
+        """
+        Attempt cancellation of every locally unresolved BUY.
+
+        The pending-key snapshot is deterministic. A concurrent
+        reconciliation that already removed one entry is treated
+        as already resolved rather than as a batch failure.
+        """
+
+        if type(cancelled_at) is not datetime:
+            raise TypeError(
+                "cancelled_at must be a datetime"
+            )
+
+        with self._lock:
+            signal_ids = tuple(
+                sorted(
+                    self._pending
+                )
+            )
+
+        results: list[
+            TradingDayEntryRuntimeResult
+        ] = []
+
+        for signal_id in signal_ids:
+            try:
+                result = self.cancel_pending_entry(
+                    signal_id,
+                    cancelled_at=cancelled_at,
+                )
+
+            except KeyError:
+                # Another reconciliation resolved the entry
+                # after the deterministic key snapshot.
+                continue
+
+            results.append(
+                result
+            )
+
+        return tuple(
+            results
+        )
+
 
     # --------------------------------------------------------
     # Initial accepted-signal processing
@@ -1615,6 +1817,29 @@ class TradingDayEntryRuntimeCoordinator:
             is BrokerOrderStatus.CANCELLED
             and snapshot.filled_quantity == 0
         ):
+            try:
+                self._persist_cancelled_entry(
+                    context=context,
+                    snapshot=snapshot,
+                )
+
+            except Exception as exc:
+                unresolved = replace(
+                    existing,
+                    reason=(
+                        TradingDayEntryRuntimeReason
+                        .RECONCILIATION_REQUIRED
+                    ),
+                    broker_snapshot=snapshot,
+                    message=str(exc),
+                )
+
+                self._results[
+                    signal_key
+                ] = unresolved
+
+                return unresolved
+
             self._release_signal_lock(
                 context.signal
             )
@@ -2012,6 +2237,66 @@ class TradingDayEntryRuntimeCoordinator:
     # --------------------------------------------------------
     # Safe pre-broker abort
     # --------------------------------------------------------
+
+    def _persist_cancelled_entry(
+        self,
+        *,
+        context:
+            TradingDayEntryReconciliationContext,
+        snapshot: BrokerOrderSnapshot,
+    ) -> None:
+        """
+        Checkpoint proven zero-fill cancellation when the active
+        production M06 broker provider is the durable provider.
+
+        Non-durable unit compositions deliberately have no
+        persistence checkpoint.
+        """
+
+        execution_result = (
+            context.execution_result
+        )
+
+        if execution_result is None:
+            raise TradingDayEntryRuntimeError(
+                "cancelled entry persistence requires "
+                "execution result"
+            )
+
+        execution_service = (
+            self._entry_adapter
+            .execution_service
+        )
+
+        provider = getattr(
+            execution_service,
+            "broker_provider",
+            None,
+        )
+
+        if not isinstance(
+            provider,
+            DurableEntryBrokerExecutionProvider,
+        ):
+            return
+
+        lifecycle_snapshot = (
+            execution_service
+            .order_state_machine
+            .snapshot(
+                context.intent.intent_id
+            )
+        )
+
+        provider.persistence.persist_cancelled_entry_order(
+            intent=context.intent,
+            result=execution_result,
+            broker_snapshot=snapshot,
+            lifecycle_snapshot=(
+                lifecycle_snapshot
+            ),
+        )
+
 
     def _abort_and_store(
         self,
@@ -3255,6 +3540,7 @@ from src.execution.position_exit_types import (
 from src.risk.force_exit_coordinator import (
     ForceExitAction,
     ForceExitInstruction,
+    ForceExitReason,
 )
 from src.risk.m06_exit_integration_service import (
     M07ExitIntegrationStatus,
@@ -3616,6 +3902,139 @@ class TradingDayForceExitRuntimeCoordinator:
             evaluated_at=evaluated_at,
         )
 
+
+    def liquidate_open_positions(
+        self,
+        *,
+        evaluated_at: datetime,
+    ) -> tuple[
+        TradingDayForceExitInstructionResult,
+        ...,
+    ]:
+        """
+        Immediately liquidate all currently open exposure for an
+        operator-requested M10 manual stop.
+
+        Unlike evaluate(), this method deliberately does NOT call
+        TradingDayForceExitCoordinator and therefore has no 15:15
+        time gate.
+
+        Existing unresolved SELLs are reconciled through the same
+        durable M06 path instead of generating duplicate SELLs.
+
+        One position failure does not prevent the remaining
+        positions from being processed.
+        """
+
+        if type(evaluated_at) is not datetime:
+            raise TypeError(
+                "evaluated_at must be a datetime"
+            )
+
+        positions = tuple(
+            sorted(
+                self._position_registry
+                .open_positions(),
+                key=lambda position: (
+                    position.position_id.value
+                ),
+            )
+        )
+
+        results: list[
+            TradingDayForceExitInstructionResult
+        ] = []
+
+        for position in positions:
+
+            if (
+                position.state
+                is ManagedPositionState.EXIT_PENDING
+            ):
+                action = (
+                    ForceExitAction
+                    .RECONCILE_EXISTING_EXIT
+                )
+
+                reason = (
+                    ForceExitReason
+                    .EXIT_ALREADY_PENDING
+                )
+
+            elif (
+                position.state
+                is ManagedPositionState
+                .RECONCILIATION_REQUIRED
+            ):
+                action = (
+                    ForceExitAction
+                    .RECONCILE_EXISTING_EXIT
+                )
+
+                reason = (
+                    ForceExitReason
+                    .RECONCILIATION_ALREADY_REQUIRED
+                )
+
+            elif (
+                position.state
+                is ManagedPositionState
+                .PARTIALLY_EXITED
+            ):
+                action = (
+                    ForceExitAction.NEW_FORCE_EXIT
+                )
+
+                reason = (
+                    ForceExitReason.PARTIAL_POSITION
+                )
+
+            else:
+                action = (
+                    ForceExitAction.NEW_FORCE_EXIT
+                )
+
+                reason = (
+                    ForceExitReason.OPEN_POSITION
+                )
+
+            instruction = ForceExitInstruction(
+                position_id=(
+                    position.position_id
+                ),
+                action=action,
+                reason=reason,
+                trigger=RiskTriggerType.MANUAL,
+                quantity=(
+                    position.open_quantity
+                ),
+                evaluated_at=evaluated_at,
+            )
+
+            try:
+                result = self._process_instruction(
+                    instruction=instruction,
+                    evaluated_at=evaluated_at,
+                )
+
+            except Exception as exc:
+                result = self._fail_closed(
+                    instruction=instruction,
+                    changed_at=evaluated_at,
+                    message=(
+                        "manual liquidation runtime failure: "
+                        f"{exc}"
+                    ),
+                )
+
+            results.append(
+                result
+            )
+
+        return tuple(
+            results
+        )
+
     # ========================================================
     # Instruction routing
     # ========================================================
@@ -3701,6 +4120,39 @@ class TradingDayForceExitRuntimeCoordinator:
                 "current open quantity"
             )
 
+        if (
+            instruction.trigger
+            not in {
+                RiskTriggerType.FORCE_EXIT,
+                RiskTriggerType.MANUAL,
+            }
+        ):
+            raise ValueError(
+                "runtime SELL requires FORCE_EXIT "
+                "or MANUAL trigger"
+            )
+
+        operation_label = (
+            "manual liquidation"
+            if (
+                instruction.trigger
+                is RiskTriggerType.MANUAL
+            )
+            else "force-exit"
+        )
+
+        decision_message = (
+            "M10 operator manual liquidation"
+            if (
+                instruction.trigger
+                is RiskTriggerType.MANUAL
+            )
+            else (
+                "M10 mandatory 15:15 "
+                "force exit"
+            )
+        )
+
         decision = PositionExitDecision(
             status=(
                 PositionExitDecisionStatus
@@ -3709,12 +4161,10 @@ class TradingDayForceExitRuntimeCoordinator:
             position_id=(
                 instruction.position_id
             ),
-            trigger=RiskTriggerType.FORCE_EXIT,
+            trigger=instruction.trigger,
             quantity=quantity,
             decided_at=evaluated_at,
-            message=(
-                "M10 mandatory 15:15 force exit"
-            ),
+            message=decision_message,
         )
 
         integration = (
@@ -3804,7 +4254,7 @@ class TradingDayForceExitRuntimeCoordinator:
             is not M07ExitIntegrationStatus.SUBMITTED
         ):
             raise RuntimeError(
-                "force-exit integration did not "
+                f"{operation_label} integration did not "
                 "submit SELL"
             )
 
@@ -3980,8 +4430,8 @@ class TradingDayForceExitRuntimeCoordinator:
                         reference.order_id
                     ),
                     message=(
-                        "force-exit SELL is cancelled; "
-                        "next 15:15 cycle may retry"
+                        f"{operation_label} SELL is cancelled; "
+                        "retry remains required"
                     ),
                 )
             )
@@ -3990,7 +4440,7 @@ class TradingDayForceExitRuntimeCoordinator:
             instruction=instruction,
             changed_at=evaluated_at,
             message=(
-                "force-exit SELL requires broker "
+                f"{operation_label} SELL requires broker "
                 f"reconciliation: {snapshot.status.value}"
             ),
             exit_intent_id=(

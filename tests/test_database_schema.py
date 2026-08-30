@@ -74,6 +74,7 @@ EXPECTED_TABLES = {
     "broker_connectivity_snapshots",
     "account_health_snapshots",
     "account_eligibility_snapshots",
+    "trading_control_states",
 }
 
 

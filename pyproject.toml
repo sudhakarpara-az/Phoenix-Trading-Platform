@@ -18,6 +18,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "SQLAlchemy>=2.0,<2.1",
     "requests>=2.32",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
 ]
 
 [tool.setuptools]

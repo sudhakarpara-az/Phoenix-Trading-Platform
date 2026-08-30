@@ -17,6 +17,11 @@ Business logic remains in M03-M07.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.app.trading_control import TradingControlRecordData
+
 from datetime import date
 from typing import (
     Generic,
@@ -804,6 +809,154 @@ class SQLAlchemyRiskSnapshotRepository(
                 .desc()
             )
         )
+
+
+from datetime import datetime as TradingControlDateTime
+from src.database.schema import TradingControlRecord
+
+
+class SQLAlchemyTradingControlRepository(
+    SQLAlchemyRepository[
+        TradingControlRecord
+    ],
+):
+    """
+    Durable account-scoped M10 trading-control repository.
+
+    ORM records remain private to this infrastructure adapter.
+    Public methods return immutable TradingControlRecordData.
+    """
+
+    model = TradingControlRecord
+
+    primary_key_attribute = (
+        "control_id"
+    )
+
+    @staticmethod
+    def _to_data(
+        record: TradingControlRecord,
+    ) -> "TradingControlRecordData":
+        from src.app.trading_control import (
+            TradingControlRecordData,
+        )
+
+        return TradingControlRecordData(
+            control_id=record.control_id,
+            broker=record.broker,
+            account_id=record.account_id,
+            state=record.state,
+            changed_at=record.changed_at,
+            message=record.message,
+        )
+
+    def get_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+    ) -> "TradingControlRecordData | None":
+        record = self._first(
+            select(
+                TradingControlRecord
+            )
+            .where(
+                TradingControlRecord.broker
+                == broker
+            )
+            .where(
+                TradingControlRecord.account_id
+                == account_id
+            )
+        )
+
+        if record is None:
+            return None
+
+        return self._to_data(
+            record
+        )
+
+    def set_for_account(
+        self,
+        *,
+        broker: str,
+        account_id: str,
+        state: str,
+        message: str | None,
+        changed_at: TradingControlDateTime,
+    ) -> "TradingControlRecordData":
+        resolved_broker = broker.strip()
+        resolved_account_id = account_id.strip()
+
+        if not resolved_broker:
+            raise ValueError(
+                "broker cannot be empty"
+            )
+
+        if not resolved_account_id:
+            raise ValueError(
+                "account_id cannot be empty"
+            )
+
+        if state not in {
+            "ACTIVE",
+            "EXIT_AND_STOP",
+        }:
+            raise ValueError(
+                "unsupported trading-control state"
+            )
+
+        if (
+            message is not None
+            and not message.strip()
+        ):
+            raise ValueError(
+                "message cannot be empty"
+            )
+
+        if type(changed_at) is not TradingControlDateTime:
+            raise TypeError(
+                "changed_at must be datetime"
+            )
+
+        existing = self.get_for_account(
+            broker=resolved_broker,
+            account_id=resolved_account_id,
+        )
+
+        control_id = (
+            existing.control_id
+            if existing is not None
+            else (
+                f"{resolved_broker}:"
+                f"{resolved_account_id}"
+            )
+        )
+
+        record = TradingControlRecord(
+            control_id=control_id,
+            broker=resolved_broker,
+            account_id=resolved_account_id,
+            state=state,
+            message=(
+                message.strip()
+                if message is not None
+                else None
+            ),
+            changed_at=changed_at,
+        )
+
+        persisted = (
+            self.add(record)
+            if existing is None
+            else self.update(record)
+        )
+
+        return self._to_data(
+            persisted
+        )
+
 
 
 # ============================================================

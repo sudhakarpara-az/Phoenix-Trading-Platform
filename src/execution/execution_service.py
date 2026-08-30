@@ -440,6 +440,110 @@ class ExecutionService:
 
         return snapshot
 
+    def cancel_entry_order(
+        self,
+        *,
+        intent: OrderIntent,
+        execution_result: ExecutionResult,
+    ) -> BrokerOrderSnapshot:
+        """
+        Request cancellation of one already-submitted LIVE BUY,
+        then establish authoritative broker truth.
+
+        The cancellation response itself is never treated as
+        final order state.
+
+        Regardless of whether the cancellation request succeeds,
+        fails, raises, or reports an ambiguous status, Phoenix
+        performs the existing refresh_entry_order_status() path.
+
+        Therefore:
+
+            cancellation request
+                ->
+            authoritative broker refresh
+                ->
+            existing M06 lifecycle/idempotency reconciliation
+
+        If both the cancellation request and the authoritative
+        refresh fail, the outcome remains uncertain.
+        """
+
+        if not isinstance(
+            intent,
+            OrderIntent,
+        ):
+            raise TypeError(
+                "intent must be OrderIntent"
+            )
+
+        if not isinstance(
+            execution_result,
+            ExecutionResult,
+        ):
+            raise TypeError(
+                "execution_result must be ExecutionResult"
+            )
+
+        if (
+            execution_result.intent_id
+            != intent.intent_id
+        ):
+            raise ValueError(
+                "execution result does not belong "
+                "to supplied entry intent"
+            )
+
+        broker_reference = (
+            execution_result.broker_reference
+        )
+
+        if broker_reference is None:
+            raise ValueError(
+                "entry cancellation requires broker reference"
+            )
+
+        cancellation_error: Exception | None = None
+
+        try:
+            cancellation = (
+                self._broker_provider
+                .cancel_order(
+                    broker_reference
+                )
+            )
+
+            if (
+                cancellation.broker_reference
+                != broker_reference
+            ):
+                cancellation_error = RuntimeError(
+                    "broker cancellation reference does not "
+                    "match entry execution reference"
+                )
+
+        except Exception as exc:
+            # Cancellation transport/result ambiguity does NOT
+            # establish order state. Continue to authoritative
+            # status reconciliation.
+            cancellation_error = exc
+
+        try:
+            return self.refresh_entry_order_status(
+                intent=intent,
+                execution_result=execution_result,
+            )
+
+        except Exception as refresh_exc:
+            if cancellation_error is not None:
+                raise RuntimeError(
+                    "entry cancellation could not establish "
+                    "authoritative broker truth"
+                ) from refresh_exc
+
+            raise
+
+
     def execute(
         self,
         *,

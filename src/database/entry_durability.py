@@ -1202,6 +1202,206 @@ class SQLAlchemyEntryPersistenceService:
                 "authoritative average fill price"
             )
 
+    def persist_cancelled_entry_order(
+        self,
+        *,
+        intent: OrderIntent,
+        result: ExecutionResult,
+        broker_snapshot: BrokerOrderSnapshot,
+        lifecycle_snapshot: OrderStateSnapshot,
+    ) -> None:
+        """
+        Persist a proven terminal zero-fill BUY cancellation.
+
+        This checkpoint is allowed only after M06 and the broker
+        independently agree that the entry is CANCELLED with
+        zero filled quantity.
+
+        Unlike a FILLED entry, no PositionRecord is required
+        because zero market exposure exists.
+        """
+
+        if not isinstance(
+            intent,
+            OrderIntent,
+        ):
+            raise TypeError(
+                "intent must be OrderIntent"
+            )
+
+        if not isinstance(
+            result,
+            ExecutionResult,
+        ):
+            raise TypeError(
+                "result must be ExecutionResult"
+            )
+
+        if not isinstance(
+            broker_snapshot,
+            BrokerOrderSnapshot,
+        ):
+            raise TypeError(
+                "broker_snapshot must be BrokerOrderSnapshot"
+            )
+
+        if not isinstance(
+            lifecycle_snapshot,
+            OrderStateSnapshot,
+        ):
+            raise TypeError(
+                "lifecycle_snapshot must be OrderStateSnapshot"
+            )
+
+        if result.intent_id != intent.intent_id:
+            raise TradingStatePersistenceError(
+                "execution result does not belong "
+                "to cancelled entry intent"
+            )
+
+        if (
+            lifecycle_snapshot.intent_id
+            != intent.intent_id
+        ):
+            raise TradingStatePersistenceError(
+                "order lifecycle snapshot does not belong "
+                "to cancelled entry intent"
+            )
+
+        if (
+            lifecycle_snapshot.current_state
+            is not OrderLifecycleState.CANCELLED
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled entry persistence requires "
+                "M06 CANCELLED lifecycle"
+            )
+
+        if (
+            broker_snapshot.status
+            is not BrokerOrderStatus.CANCELLED
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled entry persistence requires "
+                "CANCELLED broker snapshot"
+            )
+
+        if broker_snapshot.filled_quantity != 0:
+            raise TradingStatePersistenceError(
+                "cancelled entry persistence requires "
+                "zero filled quantity"
+            )
+
+        if (
+            broker_snapshot.quantity
+            != intent.quantity
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled broker quantity does not match "
+                "entry intent"
+            )
+
+        reference = result.broker_reference
+
+        if reference is None:
+            raise TradingStatePersistenceError(
+                "cancelled entry persistence requires "
+                "broker reference"
+            )
+
+        if (
+            broker_snapshot.broker_reference
+            != reference
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled broker snapshot identity conflicts "
+                "with entry execution result"
+            )
+
+        existing = (
+            self._order_repository.get(
+                intent.intent_id.value
+            )
+        )
+
+        if existing is None:
+            raise TradingStatePersistenceError(
+                "cancelled entry cannot be persisted "
+                "before durable order exists"
+            )
+
+        if existing.side != "BUY":
+            raise TradingStatePersistenceError(
+                "cancelled entry persistence requires BUY order"
+            )
+
+        if existing.quantity != intent.quantity:
+            raise TradingStatePersistenceError(
+                "durable cancelled order quantity conflicts "
+                "with entry intent"
+            )
+
+        if existing.filled_quantity != 0:
+            raise TradingStatePersistenceError(
+                "durable cancelled entry already records fill"
+            )
+
+        if (
+            existing.broker_name
+            and existing.broker_name
+            != reference.broker_name
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled entry broker identity conflicts "
+                "with durable order"
+            )
+
+        if (
+            existing.broker_order_id
+            and existing.broker_order_id
+            != reference.order_id
+        ):
+            raise TradingStatePersistenceError(
+                "cancelled broker order identity conflicts "
+                "with durable order"
+            )
+
+        if (
+            existing.status
+            == OrderLifecycleState.FILLED.value
+        ):
+            raise TradingStatePersistenceError(
+                "FILLED durable entry cannot become CANCELLED"
+            )
+
+        existing.broker_name = (
+            reference.broker_name
+        )
+
+        existing.broker_order_id = (
+            reference.order_id
+        )
+
+        existing.status = (
+            OrderLifecycleState
+            .CANCELLED
+            .value
+        )
+
+        existing.filled_quantity = 0
+        existing.average_fill_price = None
+
+        existing.updated_at = max(
+            existing.updated_at,
+            broker_snapshot.updated_at,
+            lifecycle_snapshot.updated_at,
+        )
+
+        self._order_repository.update(
+            existing
+        )
+
+
     def _add_or_validate_signal(
         self,
         expected: SignalRecord,

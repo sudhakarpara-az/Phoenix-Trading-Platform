@@ -1131,6 +1131,63 @@ class RiskSnapshotRecord(Base):
     )
 
 
+class TradingControlRecord(Base):
+    """
+    Durable M10 account-level application control state.
+
+    One record exists per broker/account identity.
+    """
+
+    __tablename__ = "trading_control_states"
+
+    control_id: Mapped[str] = mapped_column(
+        String(256),
+        primary_key=True,
+    )
+
+    broker: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        index=True,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        index=True,
+    )
+
+    state: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+
+    message: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('ACTIVE', 'EXIT_AND_STOP')",
+            name="valid_trading_control_state",
+        ),
+        Index(
+            "ux_trading_control_account",
+            "broker",
+            "account_id",
+            unique=True,
+        ),
+    )
+
+
+
 # ============================================================
 # Audit Event
 # ============================================================

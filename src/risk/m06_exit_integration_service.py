@@ -320,6 +320,19 @@ class M07ToM06ExitIntegrationService:
 
         if (
             decision.trigger
+            is RiskTriggerType.MANUAL
+        ):
+            return (
+                self._exit_plan_builder
+                .build_manual_exit(
+                    position=position.position,
+                    quantity=decision.quantity,
+                    created_at=created_at,
+                )
+            )
+
+        if (
+            decision.trigger
             is RiskTriggerType.STOP_LOSS
         ):
             if position.stop_loss is None:

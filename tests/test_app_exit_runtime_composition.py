@@ -236,6 +236,14 @@ def test_exit_runtime_preserves_all_shared_owners() -> None:
             entry_runtime,
         )
 
+        trading_control = object()
+
+        object.__setattr__(
+            trading_runtime,
+            "trading_control",
+            trading_control,
+        )
+
         exit_runtime = (
             build_exit_runtime_foundation(
                 persistence=persistence,
@@ -511,10 +519,43 @@ def test_exit_runtime_preserves_all_shared_owners() -> None:
             is False
         )
 
+
+        # --------------------------------------------
+        # Complete strong-stop orchestration reuses
+        # exact pre-existing STOP / BUY / SELL owners.
+        # --------------------------------------------
+
+        assert (
+            exit_runtime
+            .trading_control_commands
+            .trading_control
+            is trading_control
+        )
+
+        assert (
+            exit_runtime
+            .trading_control_commands
+            .entry_runtime
+            is entry_runtime
+        )
+
+        assert (
+            exit_runtime
+            .trading_control_commands
+            .liquidation_runtime
+            is exit_runtime.force_exit_runtime
+        )
+
+        assert (
+            exit_runtime
+            .trading_control_commands
+            .readiness
+            is exit_runtime.readiness_provider
+        )
+
     finally:
         persistence.sessions.stop()
         persistence.database.dispose()
-
 
 def test_persistence_foundation_owns_fill_repository() -> None:
     persistence = (
