@@ -509,6 +509,38 @@ def compose_operator_http_foundation(
 
 
 
+# ============================================================
+# M14 - Observability / Metrics / Health / Diagnostics
+# ============================================================
+
+from src.app.container import (
+    PhoenixObservabilityContainer,
+    build_observability_foundation,
+)
+
+
+def compose_observability_foundation(
+    *,
+    persistence: PhoenixPersistenceContainer,
+    dhan: PhoenixDhanContainer,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    notification: PhoenixNotificationContainer | None = None,
+) -> PhoenixObservabilityContainer:
+    """
+    Compose passive M14 observability from exact existing owners.
+
+    This wrapper does not evaluate runtime health or mutate any
+    broker, scheduler, account, notification, or event-bus state.
+    """
+
+    return build_observability_foundation(
+        persistence=persistence,
+        dhan=dhan,
+        runtime_startup=runtime_startup,
+        notification=notification,
+    )
+
+
 __all__ = [
     "compose_dhan_foundation",
     "compose_exit_runtime_foundation",
@@ -525,4 +557,5 @@ __all__ = [
     "compose_reporting_end_of_day",
     "compose_operator_api_foundation",
     "compose_operator_http_foundation",
+    "compose_observability_foundation",
 ]

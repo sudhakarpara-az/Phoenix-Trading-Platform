@@ -594,4 +594,6 @@ def test_container_public_exports() -> None:
         "build_operator_api_foundation",
         "PhoenixOperatorHttpContainer",
         "build_operator_http_foundation",
+        "PhoenixObservabilityContainer",
+        "build_observability_foundation",
     ]

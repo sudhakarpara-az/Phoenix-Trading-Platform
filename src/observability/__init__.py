@@ -1,4 +1,4 @@
-﻿"""
+"""
 Phoenix M14 — Observability / Metrics / Health / Diagnostics.
 
 M14 consumes existing authoritative subsystem state and exposes
@@ -15,6 +15,17 @@ from src.observability.observability_service import (
     ObservabilityService,
     RuntimeHealthSnapshotReader,
 )
+from src.observability.observability_sources import (
+    AccountHealthObservabilitySource,
+    AccountHealthRecordReader,
+    NotificationQueueObservabilitySource,
+    NotificationQueueSnapshotReader,
+    RuntimeEventBusObservabilitySource,
+    RuntimeEventBusReader,
+    SchedulerObservabilitySource,
+    SchedulerSnapshotReader,
+)
+
 from src.observability.observability_types import (
     ComponentHealthView,
     DiagnosticFinding,
@@ -26,6 +37,14 @@ from src.observability.observability_types import (
 )
 
 __all__ = [
+    "AccountHealthObservabilitySource",
+    "AccountHealthRecordReader",
+    "NotificationQueueObservabilitySource",
+    "NotificationQueueSnapshotReader",
+    "RuntimeEventBusObservabilitySource",
+    "RuntimeEventBusReader",
+    "SchedulerObservabilitySource",
+    "SchedulerSnapshotReader",
     "ComponentHealthView",
     "DiagnosticFinding",
     "DiagnosticSeverity",

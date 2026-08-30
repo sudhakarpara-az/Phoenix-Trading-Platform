@@ -168,6 +168,11 @@ from src.runtime.recovery_types import (
 from src.runtime.runtime_orchestrator import (
     TradingRuntimeOrchestrator,
 )
+from src.runtime.runtime_health_supervisor import (
+    DatabaseHealthCheck,
+    RecoveryHealthCheck,
+    RuntimeHealthSupervisor,
+)
 from src.runtime.runtime_types import (
     RuntimeId,
     RuntimeMode,
@@ -1318,6 +1323,7 @@ class PhoenixRuntimeStartupContainer:
     recovery_plan: StartupRecoveryPlan
     event_bus: RuntimeEventBus
     orchestrator: TradingRuntimeOrchestrator
+    health_supervisor: RuntimeHealthSupervisor | None = None
 
 
 def build_runtime_startup_foundation(
@@ -1397,6 +1403,25 @@ def build_runtime_startup_foundation(
         )
     )
 
+    health_supervisor = RuntimeHealthSupervisor(
+        orchestrator=orchestrator,
+        event_bus=runtime_event_bus,
+    )
+
+    health_supervisor.register_check(
+        check=DatabaseHealthCheck(
+            database_engine=persistence.database,
+        ),
+        order=10,
+    )
+
+    health_supervisor.register_check(
+        check=RecoveryHealthCheck(
+            orchestrator=orchestrator,
+        ),
+        order=20,
+    )
+
     return PhoenixRuntimeStartupContainer(
         persistence=persistence,
         scheduler=scheduler,
@@ -1405,6 +1430,7 @@ def build_runtime_startup_foundation(
         recovery_plan=recovery_plan,
         event_bus=runtime_event_bus,
         orchestrator=orchestrator,
+        health_supervisor=health_supervisor,
     )
 
 
@@ -2591,4 +2617,192 @@ __all__ = [
     "build_operator_api_foundation",
     "PhoenixOperatorHttpContainer",
     "build_operator_http_foundation",
+    "PhoenixObservabilityContainer",
+    "build_observability_foundation",
 ]
+
+# ============================================================
+# M14 ? Observability / Metrics / Health / Diagnostics
+# ============================================================
+
+from src.observability.observability_service import (
+    DiagnosticSource,
+    MetricSource,
+    ObservabilityService,
+)
+from src.observability.observability_sources import (
+    AccountHealthObservabilitySource,
+    NotificationQueueObservabilitySource,
+    RuntimeEventBusObservabilitySource,
+    SchedulerObservabilitySource,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class PhoenixObservabilityContainer:
+    """
+    Shared M14 passive observability composition.
+
+    M14 consumes existing subsystem owners and does not evaluate
+    M08 health checks or mutate trading/runtime state.
+    """
+
+    persistence: PhoenixPersistenceContainer
+    dhan: PhoenixDhanContainer
+    runtime_startup: PhoenixRuntimeStartupContainer
+    notification: PhoenixNotificationContainer | None
+
+    runtime_health: RuntimeHealthSupervisor
+
+    account_health_source: AccountHealthObservabilitySource
+
+    scheduler_source: SchedulerObservabilitySource
+
+    event_bus_source: RuntimeEventBusObservabilitySource
+
+    notification_source: NotificationQueueObservabilitySource | None
+
+    service: ObservabilityService
+
+
+def build_observability_foundation(
+    *,
+    persistence: PhoenixPersistenceContainer,
+    dhan: PhoenixDhanContainer,
+    runtime_startup: PhoenixRuntimeStartupContainer,
+    notification: PhoenixNotificationContainer | None = None,
+) -> PhoenixObservabilityContainer:
+    """
+    Compose passive M14 observability from exact existing owners.
+    """
+
+    if runtime_startup.persistence is not persistence:
+        raise ValueError(
+            "runtime_startup must own the exact "
+            "persistence container"
+        )
+
+    if (
+        notification is not None
+        and notification.runtime_startup
+        is not runtime_startup
+    ):
+        raise ValueError(
+            "notification must own the exact "
+            "runtime_startup container"
+        )
+
+    runtime_health = (
+        runtime_startup.health_supervisor
+    )
+
+    if runtime_health is None:
+        raise ValueError(
+            "runtime_startup must retain the "
+            "M08 RuntimeHealthSupervisor"
+        )
+
+    account_health_source = (
+        AccountHealthObservabilitySource(
+            repository=(
+                persistence
+                .account_health_repository
+            ),
+            broker="DHAN",
+            account_id=(
+                dhan.account_id.value
+            ),
+        )
+    )
+
+    scheduler_source = (
+        SchedulerObservabilitySource(
+            scheduler=(
+                runtime_startup.scheduler
+            )
+        )
+    )
+
+    event_bus_source = (
+        RuntimeEventBusObservabilitySource(
+            event_bus=(
+                runtime_startup.event_bus
+            )
+        )
+    )
+
+    notification_source: (
+        NotificationQueueObservabilitySource
+        | None
+    ) = None
+
+    metric_sources: list[
+        MetricSource
+    ] = [
+        account_health_source,
+        scheduler_source,
+        event_bus_source,
+    ]
+
+    diagnostic_sources: list[
+        DiagnosticSource
+    ] = [
+        account_health_source,
+        scheduler_source,
+    ]
+
+    if (
+        notification is not None
+        and notification.queued_channel
+        is not None
+    ):
+        notification_source = (
+            NotificationQueueObservabilitySource(
+                queue=(
+                    notification.queued_channel
+                )
+            )
+        )
+
+        metric_sources.append(
+            notification_source
+        )
+
+        diagnostic_sources.append(
+            notification_source
+        )
+
+    service = ObservabilityService(
+        runtime_health=runtime_health,
+        metric_sources=tuple(
+            metric_sources
+        ),
+        diagnostic_sources=tuple(
+            diagnostic_sources
+        ),
+    )
+
+    return PhoenixObservabilityContainer(
+        persistence=persistence,
+        dhan=dhan,
+        runtime_startup=runtime_startup,
+        notification=notification,
+        runtime_health=runtime_health,
+        account_health_source=(
+            account_health_source
+        ),
+        scheduler_source=(
+            scheduler_source
+        ),
+        event_bus_source=(
+            event_bus_source
+        ),
+        notification_source=(
+            notification_source
+        ),
+        service=service,
+    )
+
